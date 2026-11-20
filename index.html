@@ -1462,7 +1462,7 @@ async function viewUsuarios(){
     el('p',{class:'empty'},'Solo los administradores pueden ver usuarios.'))); return; }
   const p=el('div',{class:'panel'});
   p.appendChild(el('h2',{},'Usuarios'));
-  p.appendChild(el('p',{class:'hint'},'Personas que entran al sistema. Cada una tiene un PIN y un rol. Puedes crear, resetear PIN y activar/desactivar.'));
+  p.appendChild(el('p',{class:'hint'},'Personas que entran al sistema. El rol define qué ve cada uno: los Operarios solo ven Recepción y Producción. Puedes crear, cambiar rol, resetear PIN y activar/desactivar.'));
   const bar=el('div',{class:'rowbtns'});
   bar.appendChild(el('div',{class:'spacer'}));
   bar.appendChild(el('button',{class:'btn accent sm',onclick:()=>formUsuario()},'+ Nuevo usuario'));
@@ -1476,6 +1476,7 @@ async function viewUsuarios(){
   if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
   (data||[]).forEach(u=>{
     const acc=el('div',{class:'rowbtns',style:'margin:0'});
+    acc.appendChild(el('button',{class:'link',onclick:()=>formRol(u)},'Rol'));
     acc.appendChild(el('button',{class:'link',onclick:()=>resetPin(u)},'Resetear PIN'));
     acc.appendChild(el('button',{class:'link',onclick:()=>toggleActivo(u),style:u.activo?'color:#b23b3b':'color:#3f6f4e'},
       u.activo?'Desactivar':'Activar'));
@@ -1498,6 +1499,16 @@ function formUsuario(){
       if(error){toast('Error: '+error.message);return false;}
       await bitacora('crear','usuarios',nombre,{rol});
       toast('Usuario creado'); viewUsuarios(); return true;
+    });
+}
+function formRol(u){
+  const rol=sel('Rol','rol',[['operario','Operario (solo Recepción y Producción)'],['calidad','Calidad'],['bodega','Bodega'],['admin','Administrador'],['lectura','Solo lectura']], u.rol);
+  openModal('Cambiar rol de '+u.nombre,[fullWrap(rol.wrap)],
+    async ()=>{
+      const {error}=await sb.rpc('fn_set_rol',{p_id:u.id,p_rol:rol.el.value});
+      if(error){toast('Error: '+error.message);return false;}
+      await bitacora('cambiar_rol','usuarios',u.id,{rol:rol.el.value});
+      toast('Rol actualizado'); viewUsuarios(); return true;
     });
 }
 function resetPin(u){
