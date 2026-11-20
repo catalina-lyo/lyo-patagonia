@@ -215,8 +215,24 @@ const el = (t,a={},...kids)=>{const n=document.createElement(t);
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');
   clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),2600);}
 function esc(s){return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+/* ===== Capa de datos SEGURA: todo pasa por funciones con token de sesión ===== */
+async function dbList(tabla, o={}){
+  const {data,error}=await sb.rpc('api_select',{p_token:USER.token, p_tabla:tabla,
+    p_filtros:o.filtros||{}, p_orden_col:o.ordenCol||null, p_orden_dir:o.ordenDir||'asc',
+    p_limite:o.limite||1000, p_nulls_last:o.nullsLast!==false});
+  return {data: error?null:(data||[]), error};
+}
+async function dbGet(tabla, id){ const {data,error}=await dbList(tabla,{filtros:{id}}); return {data:(data&&data[0])||null, error}; }
+async function dbInsert(tabla, obj){ const {data,error}=await sb.rpc('api_insert',{p_token:USER.token,p_tabla:tabla,p_data:obj}); return {data,error}; }
+async function dbInsertMany(tabla, rows){ if(!rows||!rows.length) return {error:null}; const {error}=await sb.rpc('api_insert_rows',{p_token:USER.token,p_tabla:tabla,p_rows:rows}); return {error}; }
+async function dbUpdate(tabla, id, obj){ const {data,error}=await sb.rpc('api_update',{p_token:USER.token,p_tabla:tabla,p_id:id,p_data:obj}); return {data,error}; }
+async function dbDeleteEq(tabla, campo, valor){ const {error}=await sb.rpc('api_delete',{p_token:USER.token,p_tabla:tabla,p_campo:campo,p_valor:valor}); return {error}; }
+async function dbCount(tabla, filtros={}){ const {data,error}=await sb.rpc('api_count',{p_token:USER.token,p_tabla:tabla,p_filtros:filtros}); return {count: error?0:(data||0), error}; }
+async function mapById(tabla){ const {data}=await dbList(tabla,{limite:5000}); const m={}; (data||[]).forEach(r=>m[r.id]=r); return m; }
+
 async function bitacora(accion, entidad, entidad_id, detalle){
-  try{ await sb.from('bitacora').insert({usuario:USER?.nombre, accion, entidad,
+  try{ await dbInsert('bitacora',{usuario:USER?.nombre, accion, entidad,
     entidad_id:String(entidad_id??''), detalle:detalle||null}); }catch(e){/* no bloquea */}
 }
 
@@ -249,7 +265,8 @@ async function login(){
   $('#loginPin').value='';
   buildTabs(); go('inicio');
 }
-function logout(){ USER=null; $('#app').classList.add('hidden');
+function logout(){ try{ if(USER&&USER.token) sb.rpc('fn_logout',{p_token:USER.token}); }catch(e){}
+  USER=null; CACHE={mp:[],prov:[]}; $('#app').classList.add('hidden');
   $('#login').classList.remove('hidden'); $('#loginNombre').value=''; }
 function rolLabel(r){return {admin:'Administrador',operario:'Operario',calidad:'Calidad',
   bodega:'Bodega',lectura:'Solo lectura'}[r]||r;}
@@ -297,12 +314,12 @@ async function viewInicio(){
     try{ const {count}=await promise; tiles.appendChild(el('div',{class:'tile'},
       el('div',{class:'n'}, String(count??0)), el('div',{class:'t'}, lbl))); }catch(e){}
   }
-  await tile('Lotes MP en stock', sb.from('lotes_mp').select('*',{count:'exact',head:true}).gt('cantidad_restante',0.0001).eq('activo',true));
-  await tile('Batches producidos', sb.from('batches').select('*',{count:'exact',head:true}));
-  await tile('PT en cuarentena', sb.from('lotes_pt').select('*',{count:'exact',head:true}).eq('estado','cuarentena'));
-  await tile('Materias primas', sb.from('materias_primas').select('*',{count:'exact',head:true}));
-  await tile('Productos', sb.from('productos').select('*',{count:'exact',head:true}));
-  await tile('Proveedores', sb.from('proveedores').select('*',{count:'exact',head:true}));
+  await tile('Lotes MP en stock', dbCount('lotes_mp',{cantidad_restante:{op:'gt',val:0.0001}, activo:true}));
+  await tile('Batches producidos', dbCount('batches'));
+  await tile('PT en cuarentena', dbCount('lotes_pt',{estado:'cuarentena'}));
+  await tile('Materias primas', dbCount('materias_primas'));
+  await tile('Productos', dbCount('productos'));
+  await tile('Proveedores', dbCount('proveedores'));
 }
 
 /* ========================= MATERIAS PRIMAS ========================= */
@@ -321,7 +338,7 @@ async function viewMP(){
   const tbl=el('table',{}, el('thead',{}, el('tr',{},
     th('Código'),th('Nombre'),th('Condición'),th('Vida útil (días)'),th('Estado'),th(''))), tbody);
   wrap.appendChild(tbl); p.appendChild(wrap); v.appendChild(p);
-  const {data,error}=await sb.from('materias_primas').select('*').order('codigo');
+  const {data,error}=await dbList('materias_primas',{ordenCol:'codigo'});
   if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
   CACHE.mp=data||[];
   if(!data.length){tbody.appendChild(trMsg('Aún no hay materias primas.'));return;}
@@ -356,9 +373,9 @@ function formMP(m){
         activo:chk.el.checked };
       if(!obj.codigo||!obj.nombre){toast('Código y nombre son obligatorios');return false;}
       let r;
-      if(m){ r=await sb.from('materias_primas').update(obj).eq('id',m.id);
+      if(m){ r=await dbUpdate('materias_primas',m.id,obj);
         await bitacora('editar','materias_primas',m.id,obj); }
-      else { r=await sb.from('materias_primas').insert(obj);
+      else { r=await dbInsert('materias_primas',obj);
         await bitacora('crear','materias_primas',obj.codigo,obj); }
       if(r.error){toast('Error: '+r.error.message);return false;}
       toast(m?'Materia prima actualizada':'Materia prima creada'); viewMP(); return true;
@@ -369,7 +386,7 @@ function formMP(m){
 async function viewProd(){
   const v=$('#view'); v.innerHTML='';
   // asegura MP en cache para el selector
-  if(!CACHE.mp.length){ const {data}=await sb.from('materias_primas').select('*').order('codigo'); CACHE.mp=data||[]; }
+  if(!CACHE.mp.length){ const {data}=await dbList('materias_primas',{ordenCol:'codigo'}); CACHE.mp=data||[]; }
   const p=el('div',{class:'panel'});
   p.appendChild(el('h2',{},'Productos'));
   p.appendChild(el('p',{class:'hint'},'Catálogo Wild Snout. Código WS + número + especie (P=perro, G=gato). Cada producto usa una materia prima.'));
@@ -383,7 +400,7 @@ async function viewProd(){
   const tbl=el('table',{}, el('thead',{}, el('tr',{},
     th('Código'),th('Nombre'),th('Especie'),th('Formato'),th('EAN-13'),th('DUN-14'),th('Estado'),th(''))), tbody);
   wrap.appendChild(tbl); p.appendChild(wrap); v.appendChild(p);
-  const {data,error}=await sb.from('productos').select('*').order('codigo');
+  const {data,error}=await dbList('productos',{ordenCol:'codigo'});
   if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
   if(!data.length){tbody.appendChild(trMsg('Aún no hay productos.'));return;}
   data.forEach(pr=>{
@@ -431,15 +448,15 @@ function formProd(pr){
         activo:chk.el.checked };
       if(!obj.codigo||!obj.nombre){toast('Código y nombre son obligatorios');return false;}
       let r, prodId;
-      if(pr){ r=await sb.from('productos').update(obj).eq('id',pr.id); prodId=pr.id;
+      if(pr){ r=await dbUpdate('productos',pr.id,obj); prodId=pr.id;
         await bitacora('editar','productos',pr.id,obj); }
-      else { r=await sb.from('productos').insert(obj).select('id').single(); prodId=r.data?.id;
+      else { r=await dbInsert('productos',obj); prodId=r.data?.id;
         await bitacora('crear','productos',obj.codigo,obj); }
       if(r.error){toast('Error: '+r.error.message);return false;}
       // fórmula mono-proteína: 1 ingrediente = su MP al 100%
       if(prodId && obj.materia_prima_id){
-        await sb.from('formula_ingredientes').delete().eq('producto_id',prodId);
-        await sb.from('formula_ingredientes').insert({producto_id:prodId,materia_prima_id:obj.materia_prima_id,porcentaje:100});
+        await dbDeleteEq('formula_ingredientes','producto_id',prodId);
+        await dbInsert('formula_ingredientes',{producto_id:prodId,materia_prima_id:obj.materia_prima_id,porcentaje:100});
       }
       toast(pr?'Producto actualizado':'Producto creado'); viewProd(); return true;
     });
@@ -461,7 +478,7 @@ async function viewProv(){
   const tbl=el('table',{}, el('thead',{}, el('tr',{},
     th('Nombre'),th('RUT'),th('Aprobado'),th('Notas'),th(''))), tbody);
   wrap.appendChild(tbl); p.appendChild(wrap); v.appendChild(p);
-  const {data,error}=await sb.from('proveedores').select('*').order('nombre');
+  const {data,error}=await dbList('proveedores',{ordenCol:'nombre'});
   if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
   CACHE.prov=data||[];
   if(!data.length){tbody.appendChild(trMsg('Aún no hay proveedores.'));return;}
@@ -488,9 +505,9 @@ function formProv(p2){
         notas:f.notas.el.value.trim()||null, estado_aprobado:chk.el.checked };
       if(!obj.nombre){toast('El nombre es obligatorio');return false;}
       let r;
-      if(p2){ r=await sb.from('proveedores').update(obj).eq('id',p2.id);
+      if(p2){ r=await dbUpdate('proveedores',p2.id,obj);
         await bitacora('editar','proveedores',p2.id,obj); }
-      else { r=await sb.from('proveedores').insert(obj);
+      else { r=await dbInsert('proveedores',obj);
         await bitacora('crear','proveedores',obj.nombre,obj); }
       if(r.error){toast('Error: '+r.error.message);return false;}
       toast(p2?'Proveedor actualizado':'Proveedor creado'); viewProv(); return true;
@@ -512,11 +529,11 @@ async function viewRecepcion(){
   const tbl=el('table',{}, el('thead',{}, el('tr',{},
     th('Fecha'),th('Materia prima'),th('Proveedor'),th('Lote prov.'),th('Kg'),th('Vence'),th('Temp'),th('Estado'))), tbody);
   wrap.appendChild(tbl); p.appendChild(wrap); v.appendChild(p);
-  const {data,error}=await sb.from('lotes_mp')
-    .select('*, materias_primas(nombre,codigo), proveedores(nombre)')
-    .order('fecha_recepcion',{ascending:false}).limit(150);
+  const {data,error}=await dbList('lotes_mp',{ordenCol:'fecha_recepcion',ordenDir:'desc',limite:150});
   if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
   if(!data.length){tbody.appendChild(trMsg('Aún no hay recepciones. Toca "+ Recibir lote".'));return;}
+  const _mp=await mapById('materias_primas'), _pv=await mapById('proveedores');
+  data.forEach(l=>{ l.materias_primas=_mp[l.materia_prima_id]||null; l.proveedores=_pv[l.proveedor_id]||null; });
   data.forEach(l=>{
     tbody.appendChild(el('tr',{},
       td(l.fecha_recepcion||'—'),
@@ -556,7 +573,7 @@ async function formRecepcion(){
         vencimiento:f.venc.el.value||null, temp_recepcion:f.temp.el.value?Number(f.temp.el.value):null,
         fecha_recepcion:f.fecha.el.value||hoyISO(), recibido_por:USER.nombre,
         ubicacion:f.ubic.el.value.trim()||null, coa_url:f.coa.el.value.trim()||null, aceptado:chk.el.checked };
-      const r=await sb.from('lotes_mp').insert(obj);
+      const r=await dbInsert('lotes_mp',obj);
       if(r.error){toast('Error: '+r.error.message);return false;}
       await bitacora('recepcion_mp','lotes_mp',f.loteP.el.value||'(s/lote)',obj);
       toast('Lote recibido y sumado al stock'); viewRecepcion(); return true;
@@ -570,12 +587,11 @@ async function viewStock(){
   p.appendChild(el('h2',{},'Stock de materia prima'));
   p.appendChild(el('p',{class:'hint'},'Disponible por lote, ordenado FEFO (primero el que vence antes). En rojo, lotes que vencen en menos de 30 días.'));
   const body=el('div'); p.appendChild(body); v.appendChild(p);
-  const {data,error}=await sb.from('lotes_mp')
-    .select('*, materias_primas(nombre,codigo), proveedores(nombre)')
-    .eq('activo',true).eq('aceptado',true).gt('cantidad_restante',0.0001)
-    .order('vencimiento',{ascending:true,nullsFirst:false});
+  const {data,error}=await dbList('lotes_mp',{filtros:{activo:true,aceptado:true,cantidad_restante:{op:'gt',val:0.0001}},ordenCol:'vencimiento',ordenDir:'asc',nullsLast:true});
   if(error){body.appendChild(el('p',{class:'empty'},'Error: '+error.message));return;}
   if(!data.length){body.appendChild(el('p',{class:'empty'},'No hay stock disponible. Registra recepciones.'));return;}
+  const _mp=await mapById('materias_primas'), _pv=await mapById('proveedores');
+  data.forEach(l=>{ l.materias_primas=_mp[l.materia_prima_id]||null; l.proveedores=_pv[l.proveedor_id]||null; });
   const groups={};
   data.forEach(l=>{const k=l.materia_prima_id;
     (groups[k]=groups[k]||{nombre:(l.materias_primas?`${l.materias_primas.codigo} · ${l.materias_primas.nombre}`:'—'),lotes:[],total:0});
@@ -611,16 +627,16 @@ async function viewProduccion(){
   p.appendChild(bar);
   const wrap=el('div',{class:'tbl-wrap'}); const tbody=el('tbody');
   const tbl=el('table',{}, el('thead',{}, el('tr',{},
-    th('Código'),th('Fecha'),th('Producto'),th('Cargado'),th('Seco'),th('Rend.'),th('Humedad'),th('Estado'))), tbody);
+    th('Código'),th('Fecha'),th('Producto'),th('Operario'),th('Cargado'),th('Seco'),th('Rend.'),th('Humedad'),th('Estado'))), tbody);
   wrap.appendChild(tbl); p.appendChild(wrap); v.appendChild(p);
-  const {data,error}=await sb.from('batches')
-    .select('*, productos(codigo,nombre)').order('fecha',{ascending:false}).limit(150);
+  const {data,error}=await dbList('batches',{ordenCol:'fecha',ordenDir:'desc',limite:150});
   if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
   if(!data.length){tbody.appendChild(trMsg('Aún no hay batches. Toca "+ Nuevo batch".'));return;}
+  const _pm=await mapById('productos'); data.forEach(b=>b.productos=_pm[b.producto_id]||null);
   data.forEach(b=>{
     tbody.appendChild(el('tr',{},
       td(el('b',{},b.codigo)), td(b.fecha||'—'),
-      td(b.productos?b.productos.codigo:'—'),
+      td(b.productos?b.productos.codigo:'—'), td(b.operario||'—'),
       td(fmtKg(b.peso_total)+' kg'), td(b.peso_seco!=null?fmtKg(b.peso_seco)+' kg':'—'),
       td(b.rendimiento!=null?Number(b.rendimiento).toFixed(1)+'%':'—'),
       td(b.humedad!=null?b.humedad+'%':'—'),
@@ -668,9 +684,7 @@ async function formProduccion(){
     const opt=prodSel.selectedOptions[0]; const mpId=opt?opt.getAttribute('data-mp'):'';
     loteSel.innerHTML='<option>Cargando…</option>';
     if(!mpId){loteSel.innerHTML='<option value="">(el producto no tiene MP asignada)</option>';loteInfo.textContent='';return;}
-    const {data}=await sb.from('lotes_mp').select('*').eq('materia_prima_id',mpId)
-      .eq('activo',true).eq('aceptado',true).gt('cantidad_restante',0.0001)
-      .order('vencimiento',{ascending:true,nullsFirst:false});
+    const {data}=await dbList('lotes_mp',{filtros:{materia_prima_id:mpId,activo:true,aceptado:true,cantidad_restante:{op:'gt',val:0.0001}},ordenCol:'vencimiento',ordenDir:'asc',nullsLast:true});
     if(!data||!data.length){loteSel.innerHTML='<option value="">Sin stock para esta MP</option>';loteInfo.textContent='No hay lotes disponibles. Registra una recepción primero.';return;}
     loteSel.innerHTML=data.map((l,i)=>`<option value="${l.id}" data-disp="${l.cantidad_restante}">${esc(l.lote_proveedor||'(sin lote)')} · ${fmtKg(l.cantidad_restante)} kg · vence ${l.vencimiento||'s/f'}${i===0?'  ◀ FEFO':''}</option>`).join('');
     updLote();
@@ -705,16 +719,17 @@ async function formProduccion(){
     const vmeses= mercado.value==='export'?Number(opt.getAttribute('data-vex'))||18:Number(opt.getAttribute('data-vch'))||12;
     const venc=addMonthsISO(fecha.value,vmeses);
     const nBolsas=bolsas.value?Number(bolsas.value):0, cajas=uCaja?Math.floor(nBolsas/uCaja):0;
-    const bRes=await sb.from('batches').insert({codigo,fecha:fecha.value,producto_id:prodId,
+    const bRes=await dbInsert('batches',{codigo,fecha:fecha.value,producto_id:prodId,
+      operario:operario.value.trim()||USER.nombre,
       peso_total:total,merma:m,consumo_mp:consumo,peso_seco:sc,rendimiento:rend,humedad:hum,
-      estado:'cuarentena',observaciones:obs.value.trim()||null}).select('id').single();
+      estado:'cuarentena',observaciones:obs.value.trim()||null});
     if(bRes.error){toast('Error al crear batch: '+bRes.error.message);return false;}
     const batchId=bRes.data.id;
     const brows=PROD_BANDEJAS.filter(b=>Number(b.kg)>0).map((b,i)=>({batch_id:batchId,usuario:USER.nombre,n_bandeja:i+1,kg:Number(b.kg)}));
-    if(brows.length) await sb.from('bandejas').insert(brows);
-    await sb.from('batch_lotes_mp').insert({batch_id:batchId,lote_mp_id:loteSel.value,kg:consumo});
-    await sb.from('lotes_mp').update({cantidad_restante:Math.max(0,disp-consumo)}).eq('id',loteSel.value);
-    await sb.from('lotes_pt').insert({producto_id:prodId,batch_id:batchId,codigo_lote:codigo,
+    await dbInsertMany('bandejas',brows);
+    await dbInsert('batch_lotes_mp',{batch_id:batchId,lote_mp_id:loteSel.value,kg:consumo});
+    await dbUpdate('lotes_mp',loteSel.value,{cantidad_restante:Math.max(0,disp-consumo)});
+    await dbInsert('lotes_pt',{producto_id:prodId,batch_id:batchId,codigo_lote:codigo,
       fecha_elab:fecha.value,fecha_venc:venc,mercado:mercado.value,bolsas:nBolsas,cajas,kg:sc,estado:'cuarentena'});
     await bitacora('produccion','batches',codigo,{total,consumo,rend,hum,bolsas:nBolsas});
     toast('Batch '+codigo+' registrado. Stock descontado.'); viewProduccion(); return true;
@@ -742,12 +757,11 @@ async function viewLiberacion(){
   await load('cuarentena');
   async function load(estado){
     tbody.innerHTML='';
-    let q=sb.from('lotes_pt').select('*, productos(codigo,nombre,especie,ean13,formato,gramaje_g,unidades_bolsa), batches(humedad,rendimiento)')
-      .order('fecha_elab',{ascending:false}).limit(150);
-    if(estado) q=q.eq('estado',estado);
-    const {data,error}=await q;
+    const {data,error}=await dbList('lotes_pt',{filtros: estado?{estado}:{}, ordenCol:'fecha_elab',ordenDir:'desc',limite:150});
     if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
     if(!data.length){tbody.appendChild(trMsg('No hay lotes en este estado.'));return;}
+    const _pm=await mapById('productos'), _bm=await mapById('batches');
+    data.forEach(l=>{ l.productos=_pm[l.producto_id]||null; l.batches=l.batch_id?_bm[l.batch_id]:null; });
     data.forEach(l=>{
       const hum=l.batches?l.batches.humedad:null;
       const acc=el('div',{class:'rowbtns',style:'margin:0'});
@@ -779,15 +793,15 @@ function formLiberar(l){
       const analisis=[];
       if(hum!=null) analisis.push({lote_pt_id:l.id,parametro:'Humedad',resultado:hum+'%',conforme:humOk,laboratorio:'Interno',fecha:fechaA.el.value||null});
       if(salm.el.value) analisis.push({lote_pt_id:l.id,parametro:'Salmonella',resultado:salm.el.value,conforme:salm.el.value==='ausencia',laboratorio:lab.el.value.trim()||null,fecha:fechaA.el.value||null});
-      if(analisis.length){ const ra=await sb.from('analisis').insert(analisis); if(ra.error){toast('Error análisis: '+ra.error.message);return false;} }
+      if(analisis.length){ const ra=await dbInsertMany('analisis',analisis); if(ra.error){toast('Error análisis: '+ra.error.message);return false;} }
       const nuevo = dec==='liberado'?'liberado':'retenido';
       const upd={estado:nuevo}; if(dec==='liberado') upd.liberado_por=USER.nombre;
-      const r=await sb.from('lotes_pt').update(upd).eq('id',l.id);
+      const r=await dbUpdate('lotes_pt',l.id,upd);
       if(r.error){toast('Error: '+r.error.message);return false;}
-      if(l.batch_id) await sb.from('batches').update({estado: dec==='liberado'?'liberado':(dec==='no_conforme'?'no_conforme':'cuarentena')}).eq('id',l.batch_id);
-      await sb.from('registros_calidad').insert({tipo:'liberacion',responsable:USER.nombre,
+      if(l.batch_id) await dbUpdate('batches',l.batch_id,{estado: dec==='liberado'?'liberado':(dec==='no_conforme'?'no_conforme':'cuarentena')});
+      await dbInsert('registros_calidad',{tipo:'liberacion',responsable:USER.nombre,
         datos:{lote:l.codigo_lote,decision:dec,humedad:hum,salmonella:salm.el.value||null,visual:visual.el.checked,nota:nota.el.value||null}});
-      if(dec==='no_conforme') await sb.from('no_conformidades').insert({fecha:hoyISO(),origen:'PT',referencia:l.codigo_lote,
+      if(dec==='no_conforme') await dbInsert('no_conformidades',{fecha:hoyISO(),origen:'PT',referencia:l.codigo_lote,
         descripcion:nota.el.value||'Producto no conforme en liberación', criterio: hum!=null?('Humedad '+hum+'% vs ≤5%'):null, autoriza:USER.nombre});
       await bitacora('liberacion','lotes_pt',l.codigo_lote,{decision:dec,humedad:hum});
       toast(dec==='liberado'?'Lote liberado ✅':dec==='no_conforme'?'Lote NO CONFORME registrado':'Lote retenido');
@@ -809,9 +823,10 @@ async function viewDespachos(){
   const tbl=el('table',{}, el('thead',{}, el('tr',{},
     th('Fecha'),th('Cliente'),th('Lote'),th('Cantidad'),th('Documento'),th('Destino'))), tbody);
   wrap.appendChild(tbl); p.appendChild(wrap); v.appendChild(p);
-  const {data,error}=await sb.from('despachos').select('*, lotes_pt(codigo_lote)').order('fecha',{ascending:false}).limit(150);
+  const {data,error}=await dbList('despachos',{ordenCol:'fecha',ordenDir:'desc',limite:150});
   if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
   if(!data.length){tbody.appendChild(trMsg('Aún no hay despachos.'));return;}
+  const _ptm=await mapById('lotes_pt'); data.forEach(d=>d.lotes_pt=d.lote_pt_id?_ptm[d.lote_pt_id]:null);
   data.forEach(d=>{
     tbody.appendChild(el('tr',{},
       td(d.fecha||'—'), td(el('b',{},d.cliente)),
@@ -821,8 +836,9 @@ async function viewDespachos(){
   });
 }
 async function formDespacho(){
-  const {data:lotes}=await sb.from('lotes_pt').select('id,codigo_lote,productos(codigo,nombre)').eq('estado','liberado').order('fecha_elab',{ascending:false});
+  const {data:lotes}=await dbList('lotes_pt',{filtros:{estado:'liberado'},ordenCol:'fecha_elab',ordenDir:'desc'});
   if(!lotes||!lotes.length){ toast('No hay lotes liberados para despachar'); return; }
+  const _pm=await mapById('productos'); lotes.forEach(l=>l.productos=_pm[l.producto_id]||null);
   const opts='<option value="">Elige…</option>'+lotes.map(l=>`<option value="${l.id}">${esc(l.codigo_lote)} · ${l.productos?esc(l.productos.codigo):''}</option>`).join('');
   const f={
     cliente:inp('Cliente','cliente','','Ej. Petshop Ñuñoa'),
@@ -842,7 +858,7 @@ async function formDespacho(){
         documento:f.doc.el.value.trim()||null, lote_pt_id:f.lote.el.value,
         cantidad:f.cant.el.value?Number(f.cant.el.value):null, destino:f.destino.el.value.trim()||null,
         despachado_por:USER.nombre, vbo:f.vbo.el.value.trim()||null};
-      const r=await sb.from('despachos').insert(obj);
+      const r=await dbInsert('despachos',obj);
       if(r.error){toast('Error: '+r.error.message);return false;}
       await bitacora('despacho','despachos',f.lote.el.value,obj);
       toast('Despacho registrado'); viewDespachos(); return true;
@@ -863,11 +879,15 @@ async function viewTrazabilidad(){
   async function buscar(){
     const code=q.value.trim(); if(!code)return;
     out.innerHTML='<p class="hint">Buscando…</p>';
-    const {data:pts}=await sb.from('lotes_pt').select('*, productos(codigo,nombre,especie,ean13,formato,gramaje_g,unidades_bolsa), batches(id,codigo,fecha,peso_total,peso_seco,rendimiento,humedad,estado)').eq('codigo_lote',code);
+    const {data:pts}=await dbList('lotes_pt',{filtros:{codigo_lote:code}});
     out.innerHTML='';
-    if(pts&&pts.length){ for(const pt of pts) await traceFromPT(pt,out); return; }
-    const {data:mps}=await sb.from('lotes_mp').select('*, materias_primas(codigo,nombre), proveedores(nombre)').eq('lote_proveedor',code);
-    if(mps&&mps.length){ for(const mp of mps) await traceFromMP(mp,out); return; }
+    if(pts&&pts.length){ const _pm=await mapById('productos'), _bm=await mapById('batches');
+      pts.forEach(pt=>{pt.productos=_pm[pt.producto_id]||null; pt.batches=pt.batch_id?_bm[pt.batch_id]:null;});
+      for(const pt of pts) await traceFromPT(pt,out); return; }
+    const {data:mps}=await dbList('lotes_mp',{filtros:{lote_proveedor:code}});
+    if(mps&&mps.length){ const _mp=await mapById('materias_primas'), _pv=await mapById('proveedores');
+      mps.forEach(mp=>{mp.materias_primas=_mp[mp.materia_prima_id]||null; mp.proveedores=_pv[mp.proveedor_id]||null;});
+      for(const mp of mps) await traceFromMP(mp,out); return; }
     out.appendChild(el('p',{class:'empty'},'No se encontró ningún lote con ese código.'));
   }
 }
@@ -881,19 +901,22 @@ async function traceFromPT(pt,out){
   const b=pt.batches;
   if(b){
     card.appendChild(el('div',{class:'trace-h'},'↑ Producción (batch '+b.codigo+')'));
+    card.appendChild(kv('Operario', b.operario||'—'));
     card.appendChild(kv('Cargado', fmtKg(b.peso_total)+' kg')); card.appendChild(kv('Seco', fmtKg(b.peso_seco)+' kg'));
     card.appendChild(kv('Rendimiento', b.rendimiento!=null?Number(b.rendimiento).toFixed(1)+'%':'—'));
     card.appendChild(kv('Humedad', b.humedad!=null?b.humedad+'%':'—'));
-    const {data:bd}=await sb.from('bandejas').select('*').eq('batch_id',b.id).order('n_bandeja');
+    const {data:bd}=await dbList('bandejas',{filtros:{batch_id:b.id},ordenCol:'n_bandeja'});
     if(bd&&bd.length) card.appendChild(kv('Bandejas', bd.map(x=>`#${x.n_bandeja}: ${fmtKg(x.kg)}kg`).join('   ')));
-    const {data:bl}=await sb.from('batch_lotes_mp').select('kg, lotes_mp(lote_proveedor,vencimiento,fecha_recepcion,temp_recepcion,materias_primas(codigo,nombre),proveedores(nombre))').eq('batch_id',b.id);
+    const {data:bl}=await dbList('batch_lotes_mp',{filtros:{batch_id:b.id}});
+    const _lm=await mapById('lotes_mp'), _mp=await mapById('materias_primas'), _pv=await mapById('proveedores');
+    (bl||[]).forEach(x=>{const l=_lm[x.lote_mp_id]; if(l){l.materias_primas=_mp[l.materia_prima_id]||null; l.proveedores=_pv[l.proveedor_id]||null;} x.lotes_mp=l||null;});
     card.appendChild(el('div',{class:'trace-h'},'↑ Materia prima usada (de dónde viene)'));
     (bl||[]).forEach(x=>{const l=x.lotes_mp; if(!l)return;
       card.appendChild(kv(l.materias_primas?`${l.materias_primas.codigo} · ${l.materias_primas.nombre}`:'MP',
         `lote ${l.lote_proveedor||'s/l'} · ${fmtKg(x.kg)} kg · prov: ${l.proveedores?l.proveedores.nombre:'—'} · recep ${l.fecha_recepcion||'—'} · vence ${l.vencimiento||'—'}`)); });
     if(!bl||!bl.length) card.appendChild(el('p',{class:'hint'},'Sin lote de MP registrado.'));
   }
-  const {data:dsp}=await sb.from('despachos').select('*').eq('lote_pt_id',pt.id);
+  const {data:dsp}=await dbList('despachos',{filtros:{lote_pt_id:pt.id}});
   card.appendChild(el('div',{class:'trace-h'},'↓ Despachos (a dónde fue)'));
   if(dsp&&dsp.length) dsp.forEach(d=>card.appendChild(kv(d.fecha||'—', `${d.cliente} · ${d.cantidad!=null?d.cantidad:'?'} · ${d.documento||''} ${d.destino||''}`)));
   else card.appendChild(el('p',{class:'hint'},'Sin despachos registrados.'));
@@ -907,14 +930,16 @@ async function traceFromMP(mp,out){
   card.appendChild(kv('Proveedor', mp.proveedores?mp.proveedores.nombre:'—'));
   card.appendChild(kv('Recepción', mp.fecha_recepcion)); card.appendChild(kv('Vence', mp.vencimiento));
   card.appendChild(kv('Disponible', fmtKg(mp.cantidad_restante)+' de '+fmtKg(mp.cantidad_kg)+' kg'));
-  const {data:bl}=await sb.from('batch_lotes_mp').select('kg, batches(id,codigo,fecha,productos(codigo,nombre))').eq('lote_mp_id',mp.id);
+  const {data:bl}=await dbList('batch_lotes_mp',{filtros:{lote_mp_id:mp.id}});
+  const _bm=await mapById('batches'), _pm=await mapById('productos');
+  (bl||[]).forEach(x=>{const b=_bm[x.batch_id]; if(b){b.productos=_pm[b.producto_id]||null;} x.batches=b||null;});
   card.appendChild(el('div',{class:'trace-h'},'↓ Batches que usaron este lote (recall hacia adelante)'));
   if(!bl||!bl.length){ card.appendChild(el('p',{class:'hint'},'Este lote aún no se ha usado en producción.')); out.appendChild(card); return; }
   for(const x of bl){ const b=x.batches; if(!b)continue;
     card.appendChild(kv('Batch '+b.codigo, `${b.productos?b.productos.codigo:''} · ${b.fecha} · usó ${fmtKg(x.kg)} kg`));
-    const {data:pts}=await sb.from('lotes_pt').select('id,codigo_lote,estado').eq('batch_id',b.id);
+    const {data:pts}=await dbList('lotes_pt',{filtros:{batch_id:b.id}});
     for(const pt of (pts||[])){
-      const {data:dsp}=await sb.from('despachos').select('cliente').eq('lote_pt_id',pt.id);
+      const {data:dsp}=await dbList('despachos',{filtros:{lote_pt_id:pt.id}});
       const clientes=(dsp||[]).map(d=>d.cliente).join(', ')||'sin despachos';
       card.appendChild(kv('  → PT '+pt.codigo_lote+' ('+pt.estado+')', 'Clientes: '+clientes));
     }
@@ -924,9 +949,10 @@ async function traceFromMP(mp,out){
 
 /* ========================= ETIQUETA ========================= */
 async function openEtiqueta(loteId){
-  const {data,error}=await sb.from('lotes_pt').select('*, productos(*)').eq('id',loteId).single();
+  const {data,error}=await dbGet('lotes_pt',loteId);
   if(error||!data){toast('No se pudo cargar el lote');return;}
-  const pt=data, pr=pt.productos||{};
+  const pt=data; pt.productos=(await mapById('productos'))[pt.producto_id]||{};
+  const pr=pt.productos||{};
   const formato = pr.formato==='unidad'?(pr.unidades_bolsa?`${pr.unidades_bolsa} unidades`:'Por unidad'):(pr.gramaje_g?`${pr.gramaje_g} g`:'40 g');
   const especie = pr.especie==='perro'?'perros':'gatos';
   const label=el('div',{id:'printArea',class:'label'});
@@ -1007,9 +1033,7 @@ async function calRegistros(host){
   await load('');
   async function load(tipo){
     tbody.innerHTML='';
-    let q=sb.from('registros_calidad').select('*').order('fecha',{ascending:false}).limit(200);
-    if(tipo) q=q.eq('tipo',tipo);
-    const {data,error}=await q;
+    const {data,error}=await dbList('registros_calidad',{filtros:tipo?{tipo}:{},ordenCol:'fecha',ordenDir:'desc',limite:200});
     if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
     const rows=(data||[]).filter(r=>r.tipo!=='liberacion');
     if(!rows.length){tbody.appendChild(trMsg('Aún no hay registros. Toca "+ Nuevo registro".'));return;}
@@ -1044,7 +1068,7 @@ function formRegistro(){
   openCustomModal('Nuevo registro de calidad', body, async ()=>{
     const datos={resultado:resSel.value, detalle:obs.value.trim()||null};
     for(const k in cur){ const val=(cur[k].value||'').trim(); if(val) datos[k]=val; }
-    const r=await sb.from('registros_calidad').insert({tipo:tipoSel.value,fecha:fecha.value||hoyISO(),responsable:resp.value.trim()||USER.nombre,datos,verificado_por:verif.value.trim()||null});
+    const r=await dbInsert('registros_calidad',{tipo:tipoSel.value,fecha:fecha.value||hoyISO(),responsable:resp.value.trim()||USER.nombre,datos,verificado_por:verif.value.trim()||null});
     if(r.error){toast('Error: '+r.error.message);return false;}
     await bitacora('registro_calidad','registros_calidad',tipoSel.value,datos);
     toast('Registro guardado'); viewCalidad(); return true;
@@ -1061,7 +1085,7 @@ async function calNC(host){
   const tbl=el('table',{}, el('thead',{}, el('tr',{},
     th('N°'),th('Fecha'),th('Origen'),th('Referencia'),th('Descripción'),th('Estado'),th(''))), tbody);
   wrap.appendChild(tbl); p.appendChild(wrap); host.appendChild(p);
-  const {data,error}=await sb.from('no_conformidades').select('*').order('fecha',{ascending:false}).limit(200);
+  const {data,error}=await dbList('no_conformidades',{ordenCol:'fecha',ordenDir:'desc',limite:200});
   if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
   if(!data.length){tbody.appendChild(trMsg('Sin no conformidades registradas. 🎉'));return;}
   data.forEach(n=>{
@@ -1075,7 +1099,7 @@ async function calNC(host){
 }
 async function formNC(n){
   let numero=n?.numero;
-  if(!n){ const {count}=await sb.from('no_conformidades').select('*',{count:'exact',head:true}); numero='NC-'+new Date().getFullYear()+'-'+String((count||0)+1).padStart(3,'0'); }
+  if(!n){ const {count}=await dbCount('no_conformidades'); numero='NC-'+new Date().getFullYear()+'-'+String((count||0)+1).padStart(3,'0'); }
   const num=inp('N°','num',numero);
   const fecha=inp('Fecha','fecha',n?.fecha||hoyISO(),'',' date');
   const origen=sel('Origen','origen',[['MP','Materia prima'],['batch','Producción (batch)'],['PT','Producto terminado'],['otro','Otro']], n?.origen||'PT');
@@ -1093,7 +1117,7 @@ async function formNC(n){
         referencia:ref.el.value.trim()||null,descripcion:desc.el.value.trim()||null,criterio:crit.el.value.trim()||null,
         decision:decision.el.value||null,destino:destino.el.value.trim()||null,autoriza:autoriza.el.value.trim()||null,
         accion_correctiva:capa.el.value.trim()||null};
-      let r; if(n){r=await sb.from('no_conformidades').update(obj).eq('id',n.id);} else {r=await sb.from('no_conformidades').insert(obj);}
+      let r; if(n){r=await dbUpdate('no_conformidades',n.id,obj);} else {r=await dbInsert('no_conformidades',obj);}
       if(r.error){toast('Error: '+r.error.message);return false;}
       await bitacora(n?'editar_nc':'crear_nc','no_conformidades',obj.numero,obj);
       toast(n?'NC actualizada':'NC creada'); viewCalidad(); return true;
@@ -1110,7 +1134,7 @@ async function calDocs(host){
   const tbl=el('table',{}, el('thead',{}, el('tr',{},
     th('Código'),th('Nombre'),th('Versión'),th('Aprobado'),th('Vigente desde'),th('Estado'),th(''))), tbody);
   wrap.appendChild(tbl); p.appendChild(wrap); host.appendChild(p);
-  const {data,error}=await sb.from('documentos_controlados').select('*').order('codigo');
+  const {data,error}=await dbList('documentos_controlados',{ordenCol:'codigo'});
   if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
   if(!data.length){tbody.appendChild(trMsg('Aún no hay documentos.'));return;}
   data.forEach(d=>{
@@ -1136,7 +1160,7 @@ function formDoc(d){
       const obj={codigo:f.codigo.el.value.trim()||null,nombre:f.nombre.el.value.trim(),version:f.version.el.value.trim()||'01',
         aprobado_por:f.aprob.el.value.trim()||null,vigencia_desde:f.vig.el.value||null,archivo_url:f.url.el.value.trim()||null,activo:chk.el.checked};
       if(!obj.nombre){toast('El nombre es obligatorio');return false;}
-      let r; if(d){r=await sb.from('documentos_controlados').update(obj).eq('id',d.id);} else {r=await sb.from('documentos_controlados').insert(obj);}
+      let r; if(d){r=await dbUpdate('documentos_controlados',d.id,obj);} else {r=await dbInsert('documentos_controlados',obj);}
       if(r.error){toast('Error: '+r.error.message);return false;}
       await bitacora(d?'editar_doc':'crear_doc','documentos_controlados',obj.codigo,obj);
       toast(d?'Documento actualizado':'Documento creado'); viewCalidad(); return true;
@@ -1156,7 +1180,7 @@ async function calChecklists(host){
   const tbl=el('table',{}, el('thead',{}, el('tr',{},
     th('Fecha'),th('Checklist'),th('Zona'),th('Sujeto'),th('Monitor'),th('Resultado'),th('Verificó'),th(''))), tbody);
   wrap.appendChild(tbl); p.appendChild(wrap); host.appendChild(p);
-  const {data,error}=await sb.from('checklists').select('*').order('fecha',{ascending:false}).limit(200);
+  const {data,error}=await dbList('checklists',{ordenCol:'fecha',ordenDir:'desc',limite:200});
   if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
   if(!data.length){tbody.appendChild(trMsg('Aún no hay checklists completados. Toca "+ Hacer checklist".'));return;}
   data.forEach(c=>{
@@ -1169,7 +1193,7 @@ async function calChecklists(host){
   });
 }
 async function pickPlantilla(){
-  const {data}=await sb.from('checklist_plantillas').select('*').eq('activo',true).order('zona');
+  const {data}=await dbList('checklist_plantillas',{filtros:{activo:true},ordenCol:'zona'});
   if(!data||!data.length){toast('No hay plantillas. Créalas en "Plantillas".');return;}
   const list=el('div',{});
   data.forEach(pl=>list.appendChild(el('button',{class:'btn sec',style:'text-align:left;margin-bottom:8px',
@@ -1181,9 +1205,12 @@ async function pickPlantilla(){
   root.innerHTML=''; root.appendChild(ov);
 }
 async function formHacerChecklist(pl){
-  const {data:items}=await sb.from('checklist_items').select('*').eq('plantilla_id',pl.id).eq('activo',true).order('orden');
+  const {data:items}=await dbList('checklist_items',{filtros:{plantilla_id:pl.id,activo:true},ordenCol:'orden'});
   if(!items||!items.length){toast('Esta plantilla no tiene puntos.');return;}
   const esHigiene=(pl.zona||'').toLowerCase().includes('personal');
+  const {data:_us}=await sb.rpc('fn_usuarios_lista'); const USERS=(_us||[]).map(u=>u.nombre);
+  function userSelect(def){ const s=el('select',{class:'field chk-obs'});
+    s.innerHTML='<option value="">— ¿quién lo hizo? —</option>'+USERS.map(n=>`<option ${n===def?'selected':''}>${esc(n)}</option>`).join(''); return s; }
   const fecha=el('input',{class:'field',type:'date',value:hoyISO()});
   const monitor=el('input',{class:'field',value:USER.nombre});
   const verif=el('input',{class:'field'});
@@ -1193,7 +1220,7 @@ async function formHacerChecklist(pl){
   const tot=el('div',{class:'totbar'});
   const state={}; const itemsBox=el('div');
   items.forEach(it=>{
-    state[it.id]={resultado:'cumple',obs:'',verif:''};
+    state[it.id]={resultado:'cumple',obs:'',verif:'',responsable:(monitor.value||USER.nombre)};
     const bC=el('button',{},'Cumple'), bN=el('button',{},'No cumple'), bA=el('button',{},'N/A');
     function paint(){ bC.className=state[it.id].resultado==='cumple'?'on-cumple':''; bN.className=state[it.id].resultado==='no_cumple'?'on-nc':''; bA.className=state[it.id].resultado==='na'?'on-na':''; }
     bC.onclick=()=>{state[it.id].resultado='cumple';paint();calc();};
@@ -1206,7 +1233,8 @@ async function formHacerChecklist(pl){
     if(it.frecuencia==='semanal') title.appendChild(el('span',{class:'badge sem'},'Semanal'));
     if(it.frecuencia==='mensual') title.appendChild(el('span',{class:'badge sem'},'Mensual'));
     if(it.critico) title.appendChild(el('span',{class:'badge crit'},'Crítico 2ª✔'));
-    const row=el('div',{class:'chk-item'}, title, seg);
+    const respSel=userSelect(USER.nombre); respSel.addEventListener('change',e=>state[it.id].responsable=e.target.value);
+    const row=el('div',{class:'chk-item'}, title, seg, respSel);
     if(it.critico){ const vIn=el('input',{class:'field chk-obs',placeholder:'Verificado por (2ª firma)'}); vIn.addEventListener('input',e=>state[it.id].verif=e.target.value); row.appendChild(vIn); }
     row.appendChild(obsIn); itemsBox.appendChild(row);
   });
@@ -1234,15 +1262,15 @@ async function formHacerChecklist(pl){
       sujeto: esHigiene?(sujeto.value.trim()||null):null, monitor:monitor.value.trim()||USER.nombre,
       verificado_por:verif.value.trim()||null, total_items:r.ev, total_cumplidos:r.cumpl, total_nc:r.nc,
       acciones_correctivas:acciones.value.trim()||null, observaciones:obs.value.trim()||null, estado:'cerrado'};
-    const ins=await sb.from('checklists').insert(cl).select('id').single();
+    const ins=await dbInsert('checklists',cl);
     if(ins.error){toast('Error: '+ins.error.message);return false;}
     const clId=ins.data.id;
-    const rows=items.map(it=>({checklist_id:clId,item_id:it.id,item_texto:it.texto,resultado:state[it.id].resultado,observacion:state[it.id].obs||null,verificado_por:state[it.id].verif||null}));
-    await sb.from('checklist_respuestas').insert(rows);
+    const rows=items.map(it=>({checklist_id:clId,item_id:it.id,item_texto:it.texto,resultado:state[it.id].resultado,responsable:state[it.id].responsable||null,observacion:state[it.id].obs||null,verificado_por:state[it.id].verif||null}));
+    await dbInsertMany('checklist_respuestas',rows);
     if(r.nc>0 && genNC.el.checked){
       const fallos=items.filter(it=>state[it.id].resultado==='no_cumple').map(it=>it.texto+(state[it.id].obs?(' ('+state[it.id].obs+')'):'')).join('; ');
-      const {count}=await sb.from('no_conformidades').select('*',{count:'exact',head:true});
-      await sb.from('no_conformidades').insert({numero:'NC-'+new Date().getFullYear()+'-'+String((count||0)+1).padStart(3,'0'),
+      const {count}=await dbCount('no_conformidades');
+      await dbInsert('no_conformidades',{numero:'NC-'+new Date().getFullYear()+'-'+String((count||0)+1).padStart(3,'0'),
         fecha:cl.fecha, origen:'otro', referencia:pl.codigo||pl.nombre,
         descripcion:'Checklist '+pl.nombre+': '+fallos, criterio:'Checklist diario', autoriza:USER.nombre,
         accion_correctiva:cl.acciones_correctivas});
@@ -1252,12 +1280,12 @@ async function formHacerChecklist(pl){
   });
 }
 async function verChecklist(id){
-  const {data:c}=await sb.from('checklists').select('*').eq('id',id).single();
-  const {data:rs}=await sb.from('checklist_respuestas').select('*').eq('checklist_id',id);
+  const {data:c}=await dbGet('checklists',id);
+  const {data:rs}=await dbList('checklist_respuestas',{filtros:{checklist_id:id}});
   if(!c){toast('No se pudo cargar');return;}
   const rl={cumple:'Cumple',no_cumple:'NO cumple',na:'N/A'};
   const tdS='padding:5px;border:1px solid #ccc';
-  const rows=(rs||[]).map(r=>`<tr><td style="${tdS}">${esc(r.item_texto)}</td><td style="${tdS};text-align:center">${rl[r.resultado]||'—'}</td><td style="${tdS}">${esc(r.observacion||'')}</td><td style="${tdS}">${esc(r.verificado_por||'')}</td></tr>`).join('');
+  const rows=(rs||[]).map(r=>`<tr><td style="${tdS}">${esc(r.item_texto)}</td><td style="${tdS};text-align:center">${rl[r.resultado]||'—'}</td><td style="${tdS}">${esc(r.responsable||'')}</td><td style="${tdS}">${esc(r.observacion||'')}</td><td style="${tdS}">${esc(r.verificado_por||'')}</td></tr>`).join('');
   const area=el('div',{id:'printArea',style:'font-size:13px'});
   area.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #333;padding-bottom:6px;margin-bottom:8px">
@@ -1269,7 +1297,7 @@ async function verChecklist(id){
       <span><b>Monitor:</b> ${esc(c.monitor||'')}</span><span><b>Cumplidos:</b> ${c.total_cumplidos||0}/${c.total_items||0}</span>
       <span><b>No conformes:</b> ${c.total_nc||0}</span></div>
     <table style="width:100%;border-collapse:collapse;font-size:12px">
-      <thead><tr style="background:#eef3ee"><th style="${tdS};text-align:left">Punto</th><th style="${tdS}">Resultado</th><th style="${tdS};text-align:left">Observación</th><th style="${tdS};text-align:left">Verificación</th></tr></thead>
+      <thead><tr style="background:#eef3ee"><th style="${tdS};text-align:left">Punto</th><th style="${tdS}">Resultado</th><th style="${tdS};text-align:left">Responsable</th><th style="${tdS};text-align:left">Observación</th><th style="${tdS};text-align:left">Verificación</th></tr></thead>
       <tbody>${rows}</tbody></table>
     ${c.acciones_correctivas?`<div style="margin-top:8px"><b>Acciones correctivas:</b> ${esc(c.acciones_correctivas)}</div>`:''}
     ${c.observaciones?`<div style="margin-top:4px"><b>Observaciones:</b> ${esc(c.observaciones)}</div>`:''}
@@ -1293,7 +1321,7 @@ async function calPlantillas(host){
   const wrap=el('div',{class:'tbl-wrap'}); const tbody=el('tbody');
   const tbl=el('table',{}, el('thead',{}, el('tr',{}, th('Código'),th('Nombre'),th('Zona'),th('Frecuencia'),th('Estado'),th(''))), tbody);
   wrap.appendChild(tbl); p.appendChild(wrap); host.appendChild(p);
-  const {data,error}=await sb.from('checklist_plantillas').select('*').order('zona');
+  const {data,error}=await dbList('checklist_plantillas',{ordenCol:'zona'});
   if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
   if(!data.length){tbody.appendChild(trMsg('Aún no hay plantillas.'));return;}
   data.forEach(pl=>{
@@ -1305,7 +1333,7 @@ async function calPlantillas(host){
   });
 }
 async function calPlantillaDetail(host, plId){
-  const {data:pl}=await sb.from('checklist_plantillas').select('*').eq('id',plId).single();
+  const {data:pl}=await dbGet('checklist_plantillas',plId);
   const p=el('div',{class:'panel'});
   p.appendChild(el('button',{class:'btn sec sm',onclick:()=>{CAL_PL=null;viewCalidad();}},'← Volver a plantillas'));
   p.appendChild(el('h2',{style:'margin-top:10px'}, pl?pl.nombre:'Plantilla'));
@@ -1316,7 +1344,7 @@ async function calPlantillaDetail(host, plId){
   const wrap=el('div',{class:'tbl-wrap'}); const tbody=el('tbody');
   const tbl=el('table',{}, el('thead',{}, el('tr',{}, th('#'),th('Punto'),th('Frecuencia'),th('Crítico'),th('Estado'),th(''))), tbody);
   wrap.appendChild(tbl); p.appendChild(wrap); host.appendChild(p);
-  const {data:items}=await sb.from('checklist_items').select('*').eq('plantilla_id',plId).order('orden');
+  const {data:items}=await dbList('checklist_items',{filtros:{plantilla_id:plId},ordenCol:'orden'});
   if(!items||!items.length){tbody.appendChild(trMsg('Sin puntos todavía. Agrega el primero.'));return;}
   items.forEach(it=>{
     tbody.appendChild(el('tr',{},
@@ -1337,7 +1365,7 @@ function formPlantilla(pl){
     async ()=>{
       const obj={codigo:f.codigo.el.value.trim()||null,nombre:f.nombre.el.value.trim(),zona:f.zona.el.value.trim()||null,frecuencia:f.frec.el.value,activo:chk.el.checked};
       if(!obj.nombre){toast('El nombre es obligatorio');return false;}
-      let r; if(pl){r=await sb.from('checklist_plantillas').update(obj).eq('id',pl.id);} else {r=await sb.from('checklist_plantillas').insert(obj);}
+      let r; if(pl){r=await dbUpdate('checklist_plantillas',pl.id,obj);} else {r=await dbInsert('checklist_plantillas',obj);}
       if(r.error){toast('Error: '+r.error.message);return false;}
       toast(pl?'Plantilla actualizada':'Plantilla creada'); viewCalidad(); return true;
     });
@@ -1355,7 +1383,7 @@ function formItem(plId, it){
     async ()=>{
       const obj={plantilla_id:plId,texto:f.texto.el.value.trim(),orden:f.orden.el.value?Number(f.orden.el.value):0,frecuencia:f.frec.el.value,critico:crit.el.checked,activo:act.el.checked};
       if(!obj.texto){toast('Escribe el punto');return false;}
-      let r; if(it){r=await sb.from('checklist_items').update(obj).eq('id',it.id);} else {r=await sb.from('checklist_items').insert(obj);}
+      let r; if(it){r=await dbUpdate('checklist_items',it.id,obj);} else {r=await dbInsert('checklist_items',obj);}
       if(r.error){toast('Error: '+r.error.message);return false;}
       toast(it?'Punto actualizado':'Punto agregado'); CAL_PL=plId; viewCalidad(); return true;
     });
@@ -1460,9 +1488,9 @@ function viewCuenta(){
 function canEdit(){ return ['admin','calidad'].includes(USER.rol); }
 function canOperate(){ return USER.rol!=='lectura'; }
 /* --- loaders con cache --- */
-async function loadMP(){ if(!CACHE.mp.length){const {data}=await sb.from('materias_primas').select('*').order('codigo');CACHE.mp=data||[];} return CACHE.mp; }
-async function loadProv(){ const {data}=await sb.from('proveedores').select('*').order('nombre'); CACHE.prov=data||[]; return CACHE.prov; }
-async function loadProductos(){ const {data}=await sb.from('productos').select('id,codigo,nombre,especie,materia_prima_id,formato,u_por_caja,vida_util_chile_m,vida_util_export_m').eq('activo',true).order('codigo'); return data||[]; }
+async function loadMP(){ if(!CACHE.mp.length){const {data}=await dbList('materias_primas',{ordenCol:'codigo'});CACHE.mp=data||[];} return CACHE.mp; }
+async function loadProv(){ const {data}=await dbList('proveedores',{ordenCol:'nombre'}); CACHE.prov=data||[]; return CACHE.prov; }
+async function loadProductos(){ const {data}=await dbList('productos',{filtros:{activo:true},ordenCol:'codigo'}); return data||[]; }
 /* --- formato y fechas --- */
 function fmtKg(n){ n=Number(n)||0; return (Math.round(n*100)/100).toLocaleString('es-CL'); }
 function hoyISO(){ const d=new Date(); return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10); }
