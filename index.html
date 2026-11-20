@@ -287,9 +287,16 @@ const TABS = [
   {id:'usuarios',   label:'Usuarios', admin:true},
   {id:'cuenta',     label:'Mi cuenta'},
 ];
+// Operarios solo ven lo de producción (ingreso de MP, bandejas y producto terminado)
+const OPERARIO_TABS=['inicio','recepcion','produccion','cuenta'];
+function tabVisible(t){
+  if(t.admin && USER.rol!=='admin') return false;
+  if(USER.rol==='operario') return OPERARIO_TABS.includes(t.id);
+  return true;
+}
 function buildTabs(){
   const nav=$('#tabs'); nav.innerHTML='';
-  TABS.filter(t=>!t.admin || USER.rol==='admin').forEach(t=>{
+  TABS.filter(tabVisible).forEach(t=>{
     nav.appendChild(el('button',{class:'tab','data-id':t.id,onclick:()=>go(t.id)},t.label));
   });
 }
