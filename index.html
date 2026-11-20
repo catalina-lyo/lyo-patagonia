@@ -310,11 +310,37 @@ function go(id){ setActive(id);
     usuarios:viewUsuarios, cuenta:viewCuenta}[id]||viewInicio)(); }
 
 /* ========================= INICIO ========================= */
+function estadoTareaPill(e){ const m={pendiente:['off','Pendiente'],hecho:['gray','Firmado · espera calidad'],verificado:['on','Verificado ✓'],observado:['off','Observado por calidad']}; const [c,t]=m[e||'pendiente']||['gray',e]; return el('span',{class:'pill '+c},t); }
+async function renderMisTareas(v){
+  const {data:asig}=await dbList('plan_semanal',{filtros:{fecha:hoyISO()}});
+  const mias=(asig||[]).filter(a=>a.responsable===USER.nombre);
+  const p=el('div',{class:'panel'});
+  p.appendChild(el('h2',{},'Tus tareas de hoy'));
+  p.appendChild(el('p',{class:'hint'},'Lo que tienes asignado hoy según la planificación. Hazlo y fírmalo; luego calidad lo revisa.'));
+  if(!mias.length){ p.appendChild(el('p',{class:'hint'},'No tienes tareas asignadas para hoy. 🎉')); v.appendChild(p); return; }
+  const plm=await mapById('checklist_plantillas');
+  mias.forEach(a=>{
+    const pl=plm[a.plantilla_id];
+    const row=el('div',{class:'chk-item',style:'display:flex;align-items:center;gap:12px;flex-wrap:wrap'});
+    row.appendChild(el('div',{style:'flex:1;min-width:160px'}, el('b',{}, pl?pl.nombre:'Tarea'),
+      el('div',{style:'font-size:12px;color:var(--muted)'}, pl?(pl.zona||''):'')));
+    row.appendChild(estadoTareaPill(a.estado));
+    if(!a.estado || a.estado==='pendiente'){
+      if(pl) row.appendChild(el('button',{class:'btn accent sm',onclick:()=>formHacerChecklist(pl, a)},'Hacer y firmar'));
+    } else if(a.checklist_id){
+      row.appendChild(el('button',{class:'link',onclick:()=>verChecklist(a.checklist_id)},'Ver'));
+    }
+    if(a.estado==='observado' && a.verif_nota) row.appendChild(el('div',{style:'width:100%;color:var(--danger);font-size:13px'},'Calidad: '+esc(a.verif_nota)));
+    p.appendChild(row);
+  });
+  v.appendChild(p);
+}
 async function viewInicio(){
   const v=$('#view'); v.innerHTML='';
+  await renderMisTareas(v);
   const p=el('div',{class:'panel'},
-    el('h2',{}, 'Hola, '+USER.nombre+' 👋'),
-    el('p',{class:'hint'},'Resumen general. Desde las pestañas de arriba trabajas recepción, stock, producción y tus maestros.'));
+    el('h2',{}, 'Resumen'),
+    el('p',{class:'hint'},'Estado general de la planta.'));
   const tiles=el('div',{class:'tiles'});
   p.appendChild(tiles); v.appendChild(p);
   async function tile(lbl, promise){
@@ -1015,12 +1041,12 @@ function viewCalidad(){
   const v=$('#view'); v.innerHTML='';
   if(CAL_SUB!=='plantillas') CAL_PL=null;
   const nav=el('div',{class:'subnav'});
-  [['checklists','Checklists'],['plantillas','Plantillas'],['planificacion','Planificación'],['nc','No conformidades'],['docs','Documentos']].forEach(([id,lbl])=>{
+  [['checklists','Checklists'],['plantillas','Plantillas'],['planificacion','Planificación'],['verificacion','Verificación'],['nc','No conformidades'],['docs','Documentos']].forEach(([id,lbl])=>{
     nav.appendChild(el('button',{class:'subtab'+(CAL_SUB===id?' active':''),onclick:()=>{CAL_SUB=id;viewCalidad();}},lbl));
   });
   v.appendChild(nav);
   const host=el('div'); v.appendChild(host);
-  ({checklists:calChecklists,plantillas:calPlantillas,planificacion:calPlan,nc:calNC,docs:calDocs}[CAL_SUB]||calChecklists)(host);
+  ({checklists:calChecklists,plantillas:calPlantillas,planificacion:calPlan,verificacion:calVerificacion,nc:calNC,docs:calDocs}[CAL_SUB]||calChecklists)(host);
 }
 async function calRegistros(host){
   const p=el('div',{class:'panel'});
@@ -1211,7 +1237,7 @@ async function pickPlantilla(){
   const ov=el('div',{class:'ov',onclick:e=>{if(e.target===ov)root.innerHTML='';}}, modal);
   root.innerHTML=''; root.appendChild(ov);
 }
-async function formHacerChecklist(pl){
+async function formHacerChecklist(pl, planRow){
   const {data:items}=await dbList('checklist_items',{filtros:{plantilla_id:pl.id,activo:true},ordenCol:'orden'});
   if(!items||!items.length){toast('Esta plantilla no tiene puntos.');return;}
   const esHigiene=(pl.zona||'').toLowerCase().includes('personal');
@@ -1286,7 +1312,9 @@ async function formHacerChecklist(pl){
         accion_correctiva:cl.acciones_correctivas});
     }
     await bitacora('checklist','checklists',pl.codigo,{cumpl:r.cumpl,nc:r.nc});
-    toast('Checklist guardado'+(r.nc>0&&genNC.el.checked?' · se registró una NC':'')); viewCalidad(); return true;
+    if(planRow){ await dbUpdate('plan_semanal',planRow.id,{estado:'hecho',firmado_por:USER.nombre,firmado_at:new Date().toISOString(),checklist_id:clId}); }
+    toast('Checklist guardado y firmado'+(r.nc>0&&genNC.el.checked?' · se registró una NC':''));
+    if(planRow) viewInicio(); else viewCalidad(); return true;
   });
 }
 async function verChecklist(id){
@@ -1453,6 +1481,45 @@ async function calPlan(host){
   if(USERS.length) USERS.forEach(n=>chips.appendChild(el('span',{class:'pill '+(carga[n]>0?'on':'gray')}, `${n}: ${carga[n]}`)));
   else chips.appendChild(el('span',{class:'hint'},'No hay usuarios.'));
   resumen.appendChild(chips); host.appendChild(resumen);
+}
+
+/* ---- Verificación de tareas (calidad revisa lo que firmaron los operarios) ---- */
+async function calVerificacion(host){
+  const p=el('div',{class:'panel'});
+  p.appendChild(el('h2',{},'Verificación de tareas'));
+  p.appendChild(el('p',{class:'hint'},'Tareas que los operarios ya firmaron como hechas (según la planificación). Calidad revisa el checklist y aprueba o deja una observación.'));
+  const filtro=el('select',{class:'search'});
+  filtro.innerHTML='<option value="hecho">Por verificar</option><option value="verificado">Verificadas</option><option value="observado">Observadas</option>';
+  filtro.addEventListener('change',()=>load(filtro.value));
+  const bar=el('div',{class:'rowbtns'}); bar.appendChild(filtro); bar.appendChild(el('div',{class:'spacer'})); p.appendChild(bar);
+  const wrap=el('div',{class:'tbl-wrap'}); const tbody=el('tbody');
+  const tbl=el('table',{}, el('thead',{}, el('tr',{}, th('Fecha'),th('Tarea / zona'),th('Firmó'),th('Estado'),th(''))), tbody);
+  wrap.appendChild(tbl); p.appendChild(wrap); host.appendChild(p);
+  await load('hecho');
+  async function load(estado){
+    tbody.innerHTML='';
+    const {data}=await dbList('plan_semanal',{filtros:{estado},ordenCol:'fecha',ordenDir:'desc',limite:300});
+    if(!data||!data.length){tbody.appendChild(trMsg('Nada aquí.'));return;}
+    const plm=await mapById('checklist_plantillas');
+    data.forEach(a=>{ const pl=plm[a.plantilla_id];
+      const acc=el('div',{class:'rowbtns',style:'margin:0'});
+      if(a.checklist_id) acc.appendChild(el('button',{class:'link',onclick:()=>verChecklist(a.checklist_id)},'Ver checklist'));
+      if(a.estado==='hecho' && canCalidad()) acc.appendChild(el('button',{class:'link',onclick:()=>formVerificar(a)},'Verificar'));
+      tbody.appendChild(el('tr',{}, td(a.fecha||'—'), td(pl?(pl.zona||pl.nombre):'—'), td(a.firmado_por||'—'), td(estadoTareaPill(a.estado)), td(acc)));
+    });
+  }
+}
+function formVerificar(a){
+  const dec=sel('Resultado','dec',[['verificado','Conforme ✓'],['observado','Observado (no conforme)']],'verificado');
+  const nota=inpArea('Observación (si algo no quedó bien)','nota','');
+  openModal('Verificar tarea',[fullWrap(dec.wrap),fullWrap(nota.wrap)],
+    async ()=>{
+      const {error}=await dbUpdate('plan_semanal',a.id,{estado:dec.el.value,verificado_por:USER.nombre,
+        verificado_at:new Date().toISOString(),verif_ok:dec.el.value==='verificado',verif_nota:nota.el.value.trim()||null});
+      if(error){toast('Error: '+error.message);return false;}
+      await bitacora('verificar_tarea','plan_semanal',a.id,{estado:dec.el.value});
+      toast(dec.el.value==='verificado'?'Tarea verificada ✓':'Tarea observada'); viewCalidad(); return true;
+    });
 }
 
 /* ========================= USUARIOS (admin) ========================= */
