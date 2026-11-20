@@ -117,6 +117,22 @@
     font-size:14px;font-weight:600;color:var(--ink)}
   .subtab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 
+  /* ---- Checklists ---- */
+  .chk-item{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+  .chk-item .t{font-weight:600;margin-bottom:8px}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{border:none;background:#fff;padding:8px 14px;font-size:13px;font-weight:700;color:var(--muted);border-right:1px solid var(--line)}
+  .seg button:last-child{border-right:none}
+  .seg button.on-cumple{background:var(--brand);color:#fff}
+  .seg button.on-nc{background:var(--danger);color:#fff}
+  .seg button.on-na{background:#8a8278;color:#fff}
+  .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:6px;background:var(--chip);
+    color:var(--brand-d);margin-left:6px;text-transform:uppercase;letter-spacing:.3px;font-weight:700}
+  .badge.sem{background:#f0e6d0;color:#8a6d28}
+  .badge.crit{background:#f3e5e5;color:var(--danger)}
+  .totbar{display:flex;gap:18px;flex-wrap:wrap;font-size:14px;margin:12px 0;font-weight:700;color:var(--brand-d)}
+  .chk-obs{margin-top:8px;width:100%}
+
   /* ---- Etiqueta imprimible ---- */
   .label{border:1px solid #000;border-radius:6px;padding:12px 14px;background:#fff;color:#111;
     width:320px;margin:0 auto;font-size:12px}
@@ -961,16 +977,17 @@ const DYN={
 function tipoLabel(t){ const f=TIPOS_REG.find(x=>x[0]===t); return f?f[1]:(t||'—'); }
 function resLabel(r){ return {conforme:'Conforme',no_conforme:'No conforme',observacion:'Observación'}[r]||r; }
 function resumenDatos(d){ const p=[]; for(const k in d){ if(['resultado','detalle'].includes(k))continue; if(d[k])p.push(d[k]); } return p.slice(0,3).join(' · ')||'—'; }
-let CAL_SUB='registros';
+let CAL_SUB='checklists';
 function viewCalidad(){
   const v=$('#view'); v.innerHTML='';
+  if(CAL_SUB!=='plantillas') CAL_PL=null;
   const nav=el('div',{class:'subnav'});
-  [['registros','Registros diarios'],['nc','No conformidades'],['docs','Documentos controlados']].forEach(([id,lbl])=>{
+  [['checklists','Checklists'],['plantillas','Plantillas'],['nc','No conformidades'],['docs','Documentos']].forEach(([id,lbl])=>{
     nav.appendChild(el('button',{class:'subtab'+(CAL_SUB===id?' active':''),onclick:()=>{CAL_SUB=id;viewCalidad();}},lbl));
   });
   v.appendChild(nav);
   const host=el('div'); v.appendChild(host);
-  ({registros:calRegistros,nc:calNC,docs:calDocs}[CAL_SUB]||calRegistros)(host);
+  ({checklists:calChecklists,plantillas:calPlantillas,nc:calNC,docs:calDocs}[CAL_SUB]||calChecklists)(host);
 }
 async function calRegistros(host){
   const p=el('div',{class:'panel'});
@@ -1123,6 +1140,224 @@ function formDoc(d){
       if(r.error){toast('Error: '+r.error.message);return false;}
       await bitacora(d?'editar_doc':'crear_doc','documentos_controlados',obj.codigo,obj);
       toast(d?'Documento actualizado':'Documento creado'); viewCalidad(); return true;
+    });
+}
+
+/* ---- Checklists (llenado diario) ---- */
+let CAL_PL=null;
+async function calChecklists(host){
+  const p=el('div',{class:'panel'});
+  p.appendChild(el('h2',{},'Checklists diarios'));
+  p.appendChild(el('p',{class:'hint'},'Elige una plantilla y complétala: marca cada punto Cumple / No cumple / N-A, con observación y verificación. Al guardar calcula totales y deja la evidencia.'));
+  const bar=el('div',{class:'rowbtns'}); bar.appendChild(el('div',{class:'spacer'}));
+  if(canOperate()) bar.appendChild(el('button',{class:'btn accent sm',onclick:()=>pickPlantilla()},'+ Hacer checklist'));
+  p.appendChild(bar);
+  const wrap=el('div',{class:'tbl-wrap'}); const tbody=el('tbody');
+  const tbl=el('table',{}, el('thead',{}, el('tr',{},
+    th('Fecha'),th('Checklist'),th('Zona'),th('Sujeto'),th('Monitor'),th('Resultado'),th('Verificó'),th(''))), tbody);
+  wrap.appendChild(tbl); p.appendChild(wrap); host.appendChild(p);
+  const {data,error}=await sb.from('checklists').select('*').order('fecha',{ascending:false}).limit(200);
+  if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
+  if(!data.length){tbody.appendChild(trMsg('Aún no hay checklists completados. Toca "+ Hacer checklist".'));return;}
+  data.forEach(c=>{
+    const nc=c.total_nc||0;
+    tbody.appendChild(el('tr',{},
+      td(c.fecha||'—'), td(c.nombre||'—'), td(c.zona||'—'), td(c.sujeto||'—'), td(c.monitor||'—'),
+      td(el('span',{class:'pill '+(nc>0?'off':'on')}, (c.total_cumplidos||0)+'/'+(c.total_items||0))),
+      td(c.verificado_por||'—'),
+      td(el('button',{class:'link',onclick:()=>verChecklist(c.id)},'Ver'))));
+  });
+}
+async function pickPlantilla(){
+  const {data}=await sb.from('checklist_plantillas').select('*').eq('activo',true).order('zona');
+  if(!data||!data.length){toast('No hay plantillas. Créalas en "Plantillas".');return;}
+  const list=el('div',{});
+  data.forEach(pl=>list.appendChild(el('button',{class:'btn sec',style:'text-align:left;margin-bottom:8px',
+    onclick:()=>{ $('#modalRoot').innerHTML=''; formHacerChecklist(pl); }}, `${pl.nombre}${pl.zona?('  ·  '+pl.zona):''}`)));
+  const root=$('#modalRoot');
+  const modal=el('div',{class:'modal'}, el('h3',{},'¿Qué checklist vas a hacer?'), list,
+    el('div',{class:'actions'}, el('button',{class:'btn sec',onclick:()=>root.innerHTML=''},'Cancelar')));
+  const ov=el('div',{class:'ov',onclick:e=>{if(e.target===ov)root.innerHTML='';}}, modal);
+  root.innerHTML=''; root.appendChild(ov);
+}
+async function formHacerChecklist(pl){
+  const {data:items}=await sb.from('checklist_items').select('*').eq('plantilla_id',pl.id).eq('activo',true).order('orden');
+  if(!items||!items.length){toast('Esta plantilla no tiene puntos.');return;}
+  const esHigiene=(pl.zona||'').toLowerCase().includes('personal');
+  const fecha=el('input',{class:'field',type:'date',value:hoyISO()});
+  const monitor=el('input',{class:'field',value:USER.nombre});
+  const verif=el('input',{class:'field'});
+  const sujeto=el('input',{class:'field',placeholder:'Nombre de la persona'});
+  const acciones=el('textarea',{class:'field',rows:'2'});
+  const obs=el('textarea',{class:'field',rows:'2'});
+  const tot=el('div',{class:'totbar'});
+  const state={}; const itemsBox=el('div');
+  items.forEach(it=>{
+    state[it.id]={resultado:'cumple',obs:'',verif:''};
+    const bC=el('button',{},'Cumple'), bN=el('button',{},'No cumple'), bA=el('button',{},'N/A');
+    function paint(){ bC.className=state[it.id].resultado==='cumple'?'on-cumple':''; bN.className=state[it.id].resultado==='no_cumple'?'on-nc':''; bA.className=state[it.id].resultado==='na'?'on-na':''; }
+    bC.onclick=()=>{state[it.id].resultado='cumple';paint();calc();};
+    bN.onclick=()=>{state[it.id].resultado='no_cumple';paint();calc();};
+    bA.onclick=()=>{state[it.id].resultado='na';paint();calc();};
+    const seg=el('div',{class:'seg'},bC,bN,bA); paint();
+    const obsIn=el('input',{class:'field chk-obs',placeholder:'Observación (opcional)'});
+    obsIn.addEventListener('input',e=>state[it.id].obs=e.target.value);
+    const title=el('div',{class:'t'}, it.texto);
+    if(it.frecuencia==='semanal') title.appendChild(el('span',{class:'badge sem'},'Semanal'));
+    if(it.frecuencia==='mensual') title.appendChild(el('span',{class:'badge sem'},'Mensual'));
+    if(it.critico) title.appendChild(el('span',{class:'badge crit'},'Crítico 2ª✔'));
+    const row=el('div',{class:'chk-item'}, title, seg);
+    if(it.critico){ const vIn=el('input',{class:'field chk-obs',placeholder:'Verificado por (2ª firma)'}); vIn.addEventListener('input',e=>state[it.id].verif=e.target.value); row.appendChild(vIn); }
+    row.appendChild(obsIn); itemsBox.appendChild(row);
+  });
+  function calc(){
+    let cumpl=0,nc=0,ev=0;
+    items.forEach(it=>{const r=state[it.id].resultado; if(r==='na')return; ev++; if(r==='cumple')cumpl++; if(r==='no_cumple')nc++;});
+    tot.innerHTML=`<span>Cumplidos: <b>${cumpl}/${ev}</b></span><span>No conformes: <b style="color:${nc>0?'var(--danger)':'inherit'}">${nc}</b></span>`;
+    return {cumpl,nc,ev};
+  }
+  calc();
+  const genNC=checkbox('Generar No Conformidad si hay incumplimientos', true);
+  const body=el('div',{},
+    row2(lab('Fecha',fecha), lab('Monitor (ejecuta)',monitor)),
+    esHigiene? lab('Persona evaluada',sujeto) : el('span'),
+    el('div',{class:'trace-h'}, pl.nombre + (pl.zona?(' · '+pl.zona):'')),
+    itemsBox, tot,
+    lab('Acciones correctivas',acciones),
+    lab('Observaciones generales',obs),
+    lab('Verificado por (supervisor)',verif),
+    genNC.wrap);
+  openCustomModal('Checklist — '+pl.nombre, body, async ()=>{
+    const r=calc();
+    if(r.ev===0){toast('Marca al menos un punto');return false;}
+    const cl={plantilla_id:pl.id, codigo:pl.codigo, nombre:pl.nombre, zona:pl.zona, fecha:fecha.value||hoyISO(),
+      sujeto: esHigiene?(sujeto.value.trim()||null):null, monitor:monitor.value.trim()||USER.nombre,
+      verificado_por:verif.value.trim()||null, total_items:r.ev, total_cumplidos:r.cumpl, total_nc:r.nc,
+      acciones_correctivas:acciones.value.trim()||null, observaciones:obs.value.trim()||null, estado:'cerrado'};
+    const ins=await sb.from('checklists').insert(cl).select('id').single();
+    if(ins.error){toast('Error: '+ins.error.message);return false;}
+    const clId=ins.data.id;
+    const rows=items.map(it=>({checklist_id:clId,item_id:it.id,item_texto:it.texto,resultado:state[it.id].resultado,observacion:state[it.id].obs||null,verificado_por:state[it.id].verif||null}));
+    await sb.from('checklist_respuestas').insert(rows);
+    if(r.nc>0 && genNC.el.checked){
+      const fallos=items.filter(it=>state[it.id].resultado==='no_cumple').map(it=>it.texto+(state[it.id].obs?(' ('+state[it.id].obs+')'):'')).join('; ');
+      const {count}=await sb.from('no_conformidades').select('*',{count:'exact',head:true});
+      await sb.from('no_conformidades').insert({numero:'NC-'+new Date().getFullYear()+'-'+String((count||0)+1).padStart(3,'0'),
+        fecha:cl.fecha, origen:'otro', referencia:pl.codigo||pl.nombre,
+        descripcion:'Checklist '+pl.nombre+': '+fallos, criterio:'Checklist diario', autoriza:USER.nombre,
+        accion_correctiva:cl.acciones_correctivas});
+    }
+    await bitacora('checklist','checklists',pl.codigo,{cumpl:r.cumpl,nc:r.nc});
+    toast('Checklist guardado'+(r.nc>0&&genNC.el.checked?' · se registró una NC':'')); viewCalidad(); return true;
+  });
+}
+async function verChecklist(id){
+  const {data:c}=await sb.from('checklists').select('*').eq('id',id).single();
+  const {data:rs}=await sb.from('checklist_respuestas').select('*').eq('checklist_id',id);
+  if(!c){toast('No se pudo cargar');return;}
+  const rl={cumple:'Cumple',no_cumple:'NO cumple',na:'N/A'};
+  const tdS='padding:5px;border:1px solid #ccc';
+  const rows=(rs||[]).map(r=>`<tr><td style="${tdS}">${esc(r.item_texto)}</td><td style="${tdS};text-align:center">${rl[r.resultado]||'—'}</td><td style="${tdS}">${esc(r.observacion||'')}</td><td style="${tdS}">${esc(r.verificado_por||'')}</td></tr>`).join('');
+  const area=el('div',{id:'printArea',style:'font-size:13px'});
+  area.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #333;padding-bottom:6px;margin-bottom:8px">
+      <div><div style="font-weight:800;color:#2f543b">Lyo Patagonia</div><div style="font-size:11px;color:#555">${esc(c.codigo||'')}</div></div>
+      <div style="text-align:right"><div style="font-weight:800">${esc(c.nombre||'')}</div><div style="font-size:11px;color:#555">${esc(c.zona||'')}</div></div>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-bottom:8px">
+      <span><b>Fecha:</b> ${fmtFecha(c.fecha)}</span>${c.sujeto?`<span><b>Persona:</b> ${esc(c.sujeto)}</span>`:''}
+      <span><b>Monitor:</b> ${esc(c.monitor||'')}</span><span><b>Cumplidos:</b> ${c.total_cumplidos||0}/${c.total_items||0}</span>
+      <span><b>No conformes:</b> ${c.total_nc||0}</span></div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="background:#eef3ee"><th style="${tdS};text-align:left">Punto</th><th style="${tdS}">Resultado</th><th style="${tdS};text-align:left">Observación</th><th style="${tdS};text-align:left">Verificación</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    ${c.acciones_correctivas?`<div style="margin-top:8px"><b>Acciones correctivas:</b> ${esc(c.acciones_correctivas)}</div>`:''}
+    ${c.observaciones?`<div style="margin-top:4px"><b>Observaciones:</b> ${esc(c.observaciones)}</div>`:''}
+    <div style="margin-top:12px;font-size:12px"><b>Verificado por:</b> ${esc(c.verificado_por||'________________')}</div>`;
+  const root=$('#modalRoot');
+  const btnP=el('button',{class:'btn accent',onclick:()=>window.print()},'🖨 Imprimir');
+  const modal=el('div',{class:'modal',style:'max-width:680px'}, el('h3',{},'Checklist '+(c.codigo||'')+' · '+fmtFecha(c.fecha)), area,
+    el('div',{class:'actions'}, el('button',{class:'btn sec',onclick:()=>root.innerHTML=''},'Cerrar'), btnP));
+  const ov=el('div',{class:'ov',onclick:e=>{if(e.target===ov)root.innerHTML='';}}, modal);
+  root.innerHTML=''; root.appendChild(ov);
+}
+/* ---- Plantillas (definición de checklists) ---- */
+async function calPlantillas(host){
+  if(CAL_PL){ return calPlantillaDetail(host, CAL_PL); }
+  const p=el('div',{class:'panel'});
+  p.appendChild(el('h2',{},'Plantillas de checklist'));
+  p.appendChild(el('p',{class:'hint'},'Aquí defines los checklists y sus puntos. Ya vienen cargados por zona; puedes editar, agregar o desactivar puntos.'));
+  const bar=el('div',{class:'rowbtns'}); bar.appendChild(el('div',{class:'spacer'}));
+  if(canCalidad()) bar.appendChild(el('button',{class:'btn accent sm',onclick:()=>formPlantilla()},'+ Nueva plantilla'));
+  p.appendChild(bar);
+  const wrap=el('div',{class:'tbl-wrap'}); const tbody=el('tbody');
+  const tbl=el('table',{}, el('thead',{}, el('tr',{}, th('Código'),th('Nombre'),th('Zona'),th('Frecuencia'),th('Estado'),th(''))), tbody);
+  wrap.appendChild(tbl); p.appendChild(wrap); host.appendChild(p);
+  const {data,error}=await sb.from('checklist_plantillas').select('*').order('zona');
+  if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
+  if(!data.length){tbody.appendChild(trMsg('Aún no hay plantillas.'));return;}
+  data.forEach(pl=>{
+    const acc=el('div',{class:'rowbtns',style:'margin:0'});
+    acc.appendChild(el('button',{class:'link',onclick:()=>{CAL_PL=pl.id;viewCalidad();}},'Ítems'));
+    if(canCalidad()) acc.appendChild(el('button',{class:'link',onclick:()=>formPlantilla(pl)},'Editar'));
+    tbody.appendChild(el('tr',{},
+      td(el('b',{},pl.codigo||'—')), td(pl.nombre), td(pl.zona||'—'), td(pl.frecuencia||'diario'), td(pill(pl.activo)), td(acc)));
+  });
+}
+async function calPlantillaDetail(host, plId){
+  const {data:pl}=await sb.from('checklist_plantillas').select('*').eq('id',plId).single();
+  const p=el('div',{class:'panel'});
+  p.appendChild(el('button',{class:'btn sec sm',onclick:()=>{CAL_PL=null;viewCalidad();}},'← Volver a plantillas'));
+  p.appendChild(el('h2',{style:'margin-top:10px'}, pl?pl.nombre:'Plantilla'));
+  p.appendChild(el('p',{class:'hint'}, (pl&&pl.zona?('Zona: '+pl.zona+' · '):'')+'Puntos que se revisan en este checklist.'));
+  const bar=el('div',{class:'rowbtns'}); bar.appendChild(el('div',{class:'spacer'}));
+  if(canCalidad()) bar.appendChild(el('button',{class:'btn accent sm',onclick:()=>formItem(plId)},'+ Agregar punto'));
+  p.appendChild(bar);
+  const wrap=el('div',{class:'tbl-wrap'}); const tbody=el('tbody');
+  const tbl=el('table',{}, el('thead',{}, el('tr',{}, th('#'),th('Punto'),th('Frecuencia'),th('Crítico'),th('Estado'),th(''))), tbody);
+  wrap.appendChild(tbl); p.appendChild(wrap); host.appendChild(p);
+  const {data:items}=await sb.from('checklist_items').select('*').eq('plantilla_id',plId).order('orden');
+  if(!items||!items.length){tbody.appendChild(trMsg('Sin puntos todavía. Agrega el primero.'));return;}
+  items.forEach(it=>{
+    tbody.appendChild(el('tr',{},
+      td(String(it.orden)), td(it.texto), td(it.frecuencia), td(it.critico?'Sí':'—'), td(pill(it.activo)),
+      td(canCalidad()?el('button',{class:'link',onclick:()=>formItem(plId,it)},'Editar'):'')));
+  });
+}
+function formPlantilla(pl){
+  const f={
+    codigo:inp('Código','codigo',pl?.codigo||''),
+    nombre:inp('Nombre','nombre',pl?.nombre||''),
+    zona:inp('Zona','zona',pl?.zona||''),
+    frec:sel('Frecuencia','frec',[['diario','Diario'],['semanal','Semanal'],['mensual','Mensual']],pl?.frecuencia||'diario'),
+  };
+  const chk=checkbox('Activa', pl? pl.activo : true);
+  openModal(pl?'Editar plantilla':'Nueva plantilla',
+    [f.codigo.wrap,f.nombre.wrap,f.zona.wrap,f.frec.wrap,fullWrap(chk.wrap)],
+    async ()=>{
+      const obj={codigo:f.codigo.el.value.trim()||null,nombre:f.nombre.el.value.trim(),zona:f.zona.el.value.trim()||null,frecuencia:f.frec.el.value,activo:chk.el.checked};
+      if(!obj.nombre){toast('El nombre es obligatorio');return false;}
+      let r; if(pl){r=await sb.from('checklist_plantillas').update(obj).eq('id',pl.id);} else {r=await sb.from('checklist_plantillas').insert(obj);}
+      if(r.error){toast('Error: '+r.error.message);return false;}
+      toast(pl?'Plantilla actualizada':'Plantilla creada'); viewCalidad(); return true;
+    });
+}
+function formItem(plId, it){
+  const f={
+    texto:inpArea('Punto a revisar','texto',it?.texto||''),
+    orden:inp('Orden','orden',it?.orden??'','',' number'),
+    frec:sel('Frecuencia','frec',[['diario','Diario'],['semanal','Semanal'],['mensual','Mensual']],it?.frecuencia||'diario'),
+  };
+  const crit=checkbox('Crítico (requiere 2ª verificación)', it? it.critico : false);
+  const act=checkbox('Activo', it? it.activo : true);
+  openModal(it?'Editar punto':'Nuevo punto',
+    [fullWrap(f.texto.wrap),f.orden.wrap,f.frec.wrap,fullWrap(crit.wrap),fullWrap(act.wrap)],
+    async ()=>{
+      const obj={plantilla_id:plId,texto:f.texto.el.value.trim(),orden:f.orden.el.value?Number(f.orden.el.value):0,frecuencia:f.frec.el.value,critico:crit.el.checked,activo:act.el.checked};
+      if(!obj.texto){toast('Escribe el punto');return false;}
+      let r; if(it){r=await sb.from('checklist_items').update(obj).eq('id',it.id);} else {r=await sb.from('checklist_items').insert(obj);}
+      if(r.error){toast('Error: '+r.error.message);return false;}
+      toast(it?'Punto actualizado':'Punto agregado'); CAL_PL=plId; viewCalidad(); return true;
     });
 }
 
