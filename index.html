@@ -1008,12 +1008,12 @@ function viewCalidad(){
   const v=$('#view'); v.innerHTML='';
   if(CAL_SUB!=='plantillas') CAL_PL=null;
   const nav=el('div',{class:'subnav'});
-  [['checklists','Checklists'],['plantillas','Plantillas'],['nc','No conformidades'],['docs','Documentos']].forEach(([id,lbl])=>{
+  [['checklists','Checklists'],['plantillas','Plantillas'],['planificacion','Planificación'],['nc','No conformidades'],['docs','Documentos']].forEach(([id,lbl])=>{
     nav.appendChild(el('button',{class:'subtab'+(CAL_SUB===id?' active':''),onclick:()=>{CAL_SUB=id;viewCalidad();}},lbl));
   });
   v.appendChild(nav);
   const host=el('div'); v.appendChild(host);
-  ({checklists:calChecklists,plantillas:calPlantillas,nc:calNC,docs:calDocs}[CAL_SUB]||calChecklists)(host);
+  ({checklists:calChecklists,plantillas:calPlantillas,planificacion:calPlan,nc:calNC,docs:calDocs}[CAL_SUB]||calChecklists)(host);
 }
 async function calRegistros(host){
   const p=el('div',{class:'panel'});
@@ -1209,6 +1209,9 @@ async function formHacerChecklist(pl){
   if(!items||!items.length){toast('Esta plantilla no tiene puntos.');return;}
   const esHigiene=(pl.zona||'').toLowerCase().includes('personal');
   const {data:_us}=await sb.rpc('fn_usuarios_lista'); const USERS=(_us||[]).map(u=>u.nombre);
+  // responsable sugerido desde la planificación semanal (hoy + esta plantilla)
+  const {data:_plan}=await dbList('plan_semanal',{filtros:{fecha:hoyISO(),plantilla_id:pl.id}});
+  const DEF_RESP=(_plan&&_plan[0]&&_plan[0].responsable)||USER.nombre;
   function userSelect(def){ const s=el('select',{class:'field chk-obs'});
     s.innerHTML='<option value="">— ¿quién lo hizo? —</option>'+USERS.map(n=>`<option ${n===def?'selected':''}>${esc(n)}</option>`).join(''); return s; }
   const fecha=el('input',{class:'field',type:'date',value:hoyISO()});
@@ -1220,7 +1223,7 @@ async function formHacerChecklist(pl){
   const tot=el('div',{class:'totbar'});
   const state={}; const itemsBox=el('div');
   items.forEach(it=>{
-    state[it.id]={resultado:'cumple',obs:'',verif:'',responsable:(monitor.value||USER.nombre)};
+    state[it.id]={resultado:'cumple',obs:'',verif:'',responsable:DEF_RESP};
     const bC=el('button',{},'Cumple'), bN=el('button',{},'No cumple'), bA=el('button',{},'N/A');
     function paint(){ bC.className=state[it.id].resultado==='cumple'?'on-cumple':''; bN.className=state[it.id].resultado==='no_cumple'?'on-nc':''; bA.className=state[it.id].resultado==='na'?'on-na':''; }
     bC.onclick=()=>{state[it.id].resultado='cumple';paint();calc();};
@@ -1233,7 +1236,7 @@ async function formHacerChecklist(pl){
     if(it.frecuencia==='semanal') title.appendChild(el('span',{class:'badge sem'},'Semanal'));
     if(it.frecuencia==='mensual') title.appendChild(el('span',{class:'badge sem'},'Mensual'));
     if(it.critico) title.appendChild(el('span',{class:'badge crit'},'Crítico 2ª✔'));
-    const respSel=userSelect(USER.nombre); respSel.addEventListener('change',e=>state[it.id].responsable=e.target.value);
+    const respSel=userSelect(DEF_RESP); respSel.addEventListener('change',e=>state[it.id].responsable=e.target.value);
     const row=el('div',{class:'chk-item'}, title, seg, respSel);
     if(it.critico){ const vIn=el('input',{class:'field chk-obs',placeholder:'Verificado por (2ª firma)'}); vIn.addEventListener('input',e=>state[it.id].verif=e.target.value); row.appendChild(vIn); }
     row.appendChild(obsIn); itemsBox.appendChild(row);
@@ -1387,6 +1390,62 @@ function formItem(plId, it){
       if(r.error){toast('Error: '+r.error.message);return false;}
       toast(it?'Punto actualizado':'Punto agregado'); CAL_PL=plId; viewCalidad(); return true;
     });
+}
+
+/* ---- Planificación semanal ---- */
+const DIAS=['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+let PLAN_WEEK=null;
+function mondayOf(iso){ const d=new Date(iso+'T00:00:00'); const wd=(d.getDay()+6)%7; d.setDate(d.getDate()-wd); return d.toISOString().slice(0,10); }
+function addDaysISO(iso,n){ const d=new Date(iso+'T00:00:00'); d.setDate(d.getDate()+Number(n)); return d.toISOString().slice(0,10); }
+async function calPlan(host){
+  if(!PLAN_WEEK) PLAN_WEEK=mondayOf(hoyISO());
+  const p=el('div',{class:'panel'});
+  p.appendChild(el('h2',{},'Planificación semanal de labores'));
+  p.appendChild(el('p',{class:'hint'},'Asigna a cada persona qué checklist/zona le toca cada día. Cuando esa persona llene el checklist ese día, ya vendrá sugerida como responsable. Abajo ves cuántas tareas tiene cada uno, para repartir parejo.'));
+  const lun=PLAN_WEEK, dom=addDaysISO(PLAN_WEEK,6);
+  const nav=el('div',{class:'rowbtns'});
+  nav.appendChild(el('button',{class:'btn sec sm',onclick:()=>{PLAN_WEEK=addDaysISO(PLAN_WEEK,-7);viewCalidad();}},'← Semana'));
+  nav.appendChild(el('div',{style:'font-weight:800;color:var(--brand-d);padding:8px 10px'}, `${fmtFecha(lun)} – ${fmtFecha(dom)}`));
+  nav.appendChild(el('button',{class:'btn sec sm',onclick:()=>{PLAN_WEEK=addDaysISO(PLAN_WEEK,7);viewCalidad();}},'Semana →'));
+  nav.appendChild(el('button',{class:'btn sec sm',onclick:()=>{PLAN_WEEK=mondayOf(hoyISO());viewCalidad();}},'Hoy'));
+  p.appendChild(nav); host.appendChild(p);
+  const {data:plns}=await dbList('checklist_plantillas',{filtros:{activo:true},ordenCol:'zona'});
+  const {data:_us}=await sb.rpc('fn_usuarios_lista'); const USERS=(_us||[]).map(u=>u.nombre);
+  const fechas=[0,1,2,3,4,5,6].map(i=>addDaysISO(PLAN_WEEK,i));
+  const {data:asigAll}=await dbList('plan_semanal',{limite:5000});
+  const key=(f,pl)=>f+'|'+pl;
+  const amap={}; (asigAll||[]).forEach(a=>amap[key(a.fecha,a.plantilla_id)]=a);
+  const carga={}; USERS.forEach(n=>carga[n]=0);
+  fechas.forEach(f=>(plns||[]).forEach(pl=>{const a=amap[key(f,pl.id)]; if(a&&a.responsable&&carga[a.responsable]!=null)carga[a.responsable]++;}));
+  const thead=el('tr',{}, th('Checklist / zona'));
+  fechas.forEach((f,i)=>thead.appendChild(th(DIAS[i]+' '+f.slice(8,10)+'/'+f.slice(5,7))));
+  const tbody=el('tbody');
+  (plns||[]).forEach(pl=>{
+    const tr=el('tr',{}, td(el('div',{}, el('b',{},pl.zona||pl.nombre), el('div',{style:'font-size:11px;color:var(--muted)'},pl.codigo||''))));
+    fechas.forEach(f=>{
+      const a=amap[key(f,pl.id)];
+      const s=el('select',{class:'field',style:'padding:6px;font-size:13px;min-width:120px'});
+      s.innerHTML='<option value="">—</option>'+USERS.map(n=>`<option ${a&&a.responsable===n?'selected':''}>${esc(n)}</option>`).join('');
+      s.addEventListener('change',async()=>{
+        const val=s.value||null; const ex=amap[key(f,pl.id)];
+        if(ex){ await dbUpdate('plan_semanal',ex.id,{responsable:val}); ex.responsable=val; }
+        else { const r=await dbInsert('plan_semanal',{fecha:f,plantilla_id:pl.id,responsable:val}); if(r.data)amap[key(f,pl.id)]=r.data; }
+        toast('Asignación guardada');
+      });
+      tr.appendChild(td(s));
+    });
+    tbody.appendChild(tr);
+  });
+  const p2=el('div',{class:'panel'});
+  if(!plns||!plns.length){ p2.appendChild(el('p',{class:'empty'},'No hay plantillas de checklist. Créalas en "Plantillas".')); }
+  else { const w=el('div',{class:'tbl-wrap'}); w.appendChild(el('table',{}, el('thead',{},thead), tbody)); p2.appendChild(w); }
+  host.appendChild(p2);
+  const resumen=el('div',{class:'panel'});
+  resumen.appendChild(el('h3',{style:'margin:0 0 8px;font-size:15px'},'Carga de la semana (tareas asignadas por persona)'));
+  const chips=el('div',{style:'display:flex;gap:10px;flex-wrap:wrap'});
+  if(USERS.length) USERS.forEach(n=>chips.appendChild(el('span',{class:'pill '+(carga[n]>0?'on':'gray')}, `${n}: ${carga[n]}`)));
+  else chips.appendChild(el('span',{class:'hint'},'No hay usuarios.'));
+  resumen.appendChild(chips); host.appendChild(resumen);
 }
 
 /* ========================= USUARIOS (admin) ========================= */
