@@ -111,6 +111,12 @@
   .kv .v{flex:1}
   .trace-h{margin:14px 0 4px;font-weight:800;color:var(--brand-d);font-size:13px}
 
+  /* ---- Sub-navegación (Calidad) ---- */
+  .subnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+  .subtab{border:1px solid var(--line);background:#fff;padding:8px 14px;border-radius:999px;
+    font-size:14px;font-weight:600;color:var(--ink)}
+  .subtab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
   /* ---- Etiqueta imprimible ---- */
   .label{border:1px solid #000;border-radius:6px;padding:12px 14px;background:#fff;color:#111;
     width:320px;margin:0 auto;font-size:12px}
@@ -241,6 +247,7 @@ const TABS = [
   {id:'liberacion', label:'Liberación'},
   {id:'despachos',  label:'Despachos'},
   {id:'trazabilidad',label:'Trazabilidad'},
+  {id:'calidad',    label:'Calidad'},
   {id:'mp',         label:'Materias primas'},
   {id:'prod',       label:'Productos'},
   {id:'prov',       label:'Proveedores'},
@@ -258,6 +265,7 @@ function setActive(id){ document.querySelectorAll('.tab').forEach(b=>
 function go(id){ setActive(id);
   ({inicio:viewInicio, recepcion:viewRecepcion, stock:viewStock, produccion:viewProduccion,
     liberacion:viewLiberacion, despachos:viewDespachos, trazabilidad:viewTrazabilidad,
+    calidad:viewCalidad,
     mp:viewMP, prod:viewProd, prov:viewProv,
     usuarios:viewUsuarios, cuenta:viewCuenta}[id]||viewInicio)(); }
 
@@ -931,6 +939,192 @@ async function openEtiqueta(loteId){
   } else if(svg){ svg.outerHTML='<div class="l-ean">EAN: '+esc(pr.ean13||'—')+'</div>'; }
 }
 function fmtFecha(iso){ if(!iso)return'—'; const [a,m,d]=iso.split('-'); return `${d}/${m}/${a}`; }
+
+/* ========================= CALIDAD (Fase 3) ========================= */
+function canCalidad(){ return ['admin','calidad'].includes(USER.rol); }
+const TIPOS_REG=[
+  ['limpieza_sanitizacion','Limpieza / sanitización'],
+  ['higiene_personal','Higiene del personal'],
+  ['higiene_planta','Higiene de la planta'],
+  ['plagas','Control de plagas'],
+  ['calibracion','Calibración de equipos'],
+  ['capacitacion','Capacitación'],
+];
+const DYN={
+  limpieza_sanitizacion:[{key:'area',label:'Área / equipo'},{key:'producto',label:'Producto / químico'},{key:'metodo',label:'Método / concentración'}],
+  higiene_personal:[{key:'personal',label:'Persona(s)'},{key:'items',label:'Revisión (uniforme, manos, sin joyas, cofia, mascarilla)',area:true}],
+  higiene_planta:[{key:'area',label:'Área'},{key:'estado',label:'Estado observado'}],
+  plagas:[{key:'empresa',label:'Empresa control de plagas'},{key:'informe',label:'N° informe / visita'},{key:'hallazgos',label:'Hallazgos',area:true}],
+  calibracion:[{key:'equipo',label:'Equipo (medidor humedad, termómetro, balanza)'},{key:'patron',label:'Patrón / resultado'},{key:'proxima',label:'Próxima calibración',type:'date'}],
+  capacitacion:[{key:'tema',label:'Tema'},{key:'asistentes',label:'Asistentes',area:true},{key:'duracion',label:'Duración'}],
+};
+function tipoLabel(t){ const f=TIPOS_REG.find(x=>x[0]===t); return f?f[1]:(t||'—'); }
+function resLabel(r){ return {conforme:'Conforme',no_conforme:'No conforme',observacion:'Observación'}[r]||r; }
+function resumenDatos(d){ const p=[]; for(const k in d){ if(['resultado','detalle'].includes(k))continue; if(d[k])p.push(d[k]); } return p.slice(0,3).join(' · ')||'—'; }
+let CAL_SUB='registros';
+function viewCalidad(){
+  const v=$('#view'); v.innerHTML='';
+  const nav=el('div',{class:'subnav'});
+  [['registros','Registros diarios'],['nc','No conformidades'],['docs','Documentos controlados']].forEach(([id,lbl])=>{
+    nav.appendChild(el('button',{class:'subtab'+(CAL_SUB===id?' active':''),onclick:()=>{CAL_SUB=id;viewCalidad();}},lbl));
+  });
+  v.appendChild(nav);
+  const host=el('div'); v.appendChild(host);
+  ({registros:calRegistros,nc:calNC,docs:calDocs}[CAL_SUB]||calRegistros)(host);
+}
+async function calRegistros(host){
+  const p=el('div',{class:'panel'});
+  p.appendChild(el('h2',{},'Registros diarios de calidad'));
+  p.appendChild(el('p',{class:'hint'},'Limpieza, sanitización, higiene, plagas, calibración y capacitación. Quedan con fecha, responsable y resultado — la base de evidencia para SQF.'));
+  const bar=el('div',{class:'rowbtns'});
+  const filtro=el('select',{class:'search'});
+  filtro.innerHTML='<option value="">Todos los tipos</option>'+TIPOS_REG.map(t=>`<option value="${t[0]}">${t[1]}</option>`).join('');
+  filtro.addEventListener('change',()=>load(filtro.value));
+  bar.appendChild(filtro); bar.appendChild(el('div',{class:'spacer'}));
+  if(canOperate()) bar.appendChild(el('button',{class:'btn accent sm',onclick:()=>formRegistro()},'+ Nuevo registro'));
+  p.appendChild(bar);
+  const wrap=el('div',{class:'tbl-wrap'}); const tbody=el('tbody');
+  const tbl=el('table',{}, el('thead',{}, el('tr',{},
+    th('Fecha'),th('Tipo'),th('Responsable'),th('Resultado'),th('Detalle'),th('Verificó'))), tbody);
+  wrap.appendChild(tbl); p.appendChild(wrap); host.appendChild(p);
+  await load('');
+  async function load(tipo){
+    tbody.innerHTML='';
+    let q=sb.from('registros_calidad').select('*').order('fecha',{ascending:false}).limit(200);
+    if(tipo) q=q.eq('tipo',tipo);
+    const {data,error}=await q;
+    if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
+    const rows=(data||[]).filter(r=>r.tipo!=='liberacion');
+    if(!rows.length){tbody.appendChild(trMsg('Aún no hay registros. Toca "+ Nuevo registro".'));return;}
+    rows.forEach(r=>{
+      const d=r.datos||{}; const res=d.resultado||'';
+      const cls= res==='conforme'?'on':res==='no_conforme'?'off':'gray';
+      tbody.appendChild(el('tr',{},
+        td(r.fecha||'—'), td(tipoLabel(r.tipo)), td(r.responsable||'—'),
+        td(res?el('span',{class:'pill '+cls},resLabel(res)):'—'),
+        td(d.detalle||resumenDatos(d)), td(r.verificado_por||'—')));
+    });
+  }
+}
+function formRegistro(){
+  const tipoSel=el('select',{class:'field'}); tipoSel.innerHTML=TIPOS_REG.map(t=>`<option value="${t[0]}">${t[1]}</option>`).join('');
+  const fecha=el('input',{class:'field',type:'date',value:hoyISO()});
+  const resp=el('input',{class:'field',value:USER.nombre});
+  const resSel=el('select',{class:'field'}); resSel.innerHTML='<option value="conforme">Conforme</option><option value="observacion">Observación</option><option value="no_conforme">No conforme</option>';
+  const verif=el('input',{class:'field'});
+  const obs=el('textarea',{class:'field',rows:'2'});
+  const dynHost=el('div'); let cur={};
+  function renderDyn(){ dynHost.innerHTML=''; cur={};
+    (DYN[tipoSel.value]||[]).forEach(fd=>{ const i=el(fd.area?'textarea':'input',{class:'field'}); if(fd.area)i.rows='2'; if(fd.type)i.type=fd.type; cur[fd.key]=i; dynHost.appendChild(lab(fd.label,i)); }); }
+  tipoSel.addEventListener('change',renderDyn); renderDyn();
+  const body=el('div',{},
+    lab('Tipo de registro',tipoSel),
+    row2(lab('Fecha',fecha), lab('Responsable',resp)),
+    dynHost,
+    lab('Resultado',resSel),
+    lab('Verificado por',verif),
+    lab('Observaciones',obs));
+  openCustomModal('Nuevo registro de calidad', body, async ()=>{
+    const datos={resultado:resSel.value, detalle:obs.value.trim()||null};
+    for(const k in cur){ const val=(cur[k].value||'').trim(); if(val) datos[k]=val; }
+    const r=await sb.from('registros_calidad').insert({tipo:tipoSel.value,fecha:fecha.value||hoyISO(),responsable:resp.value.trim()||USER.nombre,datos,verificado_por:verif.value.trim()||null});
+    if(r.error){toast('Error: '+r.error.message);return false;}
+    await bitacora('registro_calidad','registros_calidad',tipoSel.value,datos);
+    toast('Registro guardado'); viewCalidad(); return true;
+  });
+}
+async function calNC(host){
+  const p=el('div',{class:'panel'});
+  p.appendChild(el('h2',{},'No conformidades y acciones correctivas (CAPA)'));
+  p.appendChild(el('p',{class:'hint'},'Problemas detectados (MP, batch o producto terminado) y qué se hizo. "Cerrada" = con acción correctiva registrada. Algunas se crean solas desde Liberación.'));
+  const bar=el('div',{class:'rowbtns'}); bar.appendChild(el('div',{class:'spacer'}));
+  if(canCalidad()) bar.appendChild(el('button',{class:'btn accent sm',onclick:()=>formNC()},'+ Nueva NC'));
+  p.appendChild(bar);
+  const wrap=el('div',{class:'tbl-wrap'}); const tbody=el('tbody');
+  const tbl=el('table',{}, el('thead',{}, el('tr',{},
+    th('N°'),th('Fecha'),th('Origen'),th('Referencia'),th('Descripción'),th('Estado'),th(''))), tbody);
+  wrap.appendChild(tbl); p.appendChild(wrap); host.appendChild(p);
+  const {data,error}=await sb.from('no_conformidades').select('*').order('fecha',{ascending:false}).limit(200);
+  if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
+  if(!data.length){tbody.appendChild(trMsg('Sin no conformidades registradas. 🎉'));return;}
+  data.forEach(n=>{
+    const cerrada=!!(n.accion_correctiva&&n.accion_correctiva.trim());
+    tbody.appendChild(el('tr',{},
+      td(n.numero||'—'), td(n.fecha||'—'), td(n.origen||'—'), td(n.referencia||'—'),
+      td(n.descripcion||'—'),
+      td(el('span',{class:'pill '+(cerrada?'on':'off')}, cerrada?'Cerrada':'Abierta')),
+      td(canCalidad()?el('button',{class:'link',onclick:()=>formNC(n)},'Ver / CAPA'):'')));
+  });
+}
+async function formNC(n){
+  let numero=n?.numero;
+  if(!n){ const {count}=await sb.from('no_conformidades').select('*',{count:'exact',head:true}); numero='NC-'+new Date().getFullYear()+'-'+String((count||0)+1).padStart(3,'0'); }
+  const num=inp('N°','num',numero);
+  const fecha=inp('Fecha','fecha',n?.fecha||hoyISO(),'',' date');
+  const origen=sel('Origen','origen',[['MP','Materia prima'],['batch','Producción (batch)'],['PT','Producto terminado'],['otro','Otro']], n?.origen||'PT');
+  const ref=inp('Referencia (lote / código)','ref',n?.referencia||'');
+  const desc=inpArea('Descripción del problema','desc',n?.descripcion||'');
+  const crit=inp('Criterio incumplido','crit',n?.criterio||'');
+  const decision=sel('Decisión','dec',[['','—'],['reproceso','Reproceso'],['descarte','Descarte'],['reclasificacion','Reclasificación'],['concesion','Concesión']], n?.decision||'');
+  const destino=inp('Destino del producto','destino',n?.destino||'');
+  const autoriza=inp('Autoriza','autoriza',n?.autoriza||USER.nombre);
+  const capa=inpArea('Acción correctiva (CAPA)','capa',n?.accion_correctiva||'');
+  openModal(n?('No conformidad '+(n.numero||'')):'Nueva no conformidad',
+    [num.wrap,fecha.wrap,origen.wrap,ref.wrap,fullWrap(desc.wrap),crit.wrap,decision.wrap,destino.wrap,autoriza.wrap,fullWrap(capa.wrap)],
+    async ()=>{
+      const obj={numero:num.el.value.trim()||null,fecha:fecha.el.value||hoyISO(),origen:origen.el.value||null,
+        referencia:ref.el.value.trim()||null,descripcion:desc.el.value.trim()||null,criterio:crit.el.value.trim()||null,
+        decision:decision.el.value||null,destino:destino.el.value.trim()||null,autoriza:autoriza.el.value.trim()||null,
+        accion_correctiva:capa.el.value.trim()||null};
+      let r; if(n){r=await sb.from('no_conformidades').update(obj).eq('id',n.id);} else {r=await sb.from('no_conformidades').insert(obj);}
+      if(r.error){toast('Error: '+r.error.message);return false;}
+      await bitacora(n?'editar_nc':'crear_nc','no_conformidades',obj.numero,obj);
+      toast(n?'NC actualizada':'NC creada'); viewCalidad(); return true;
+    });
+}
+async function calDocs(host){
+  const p=el('div',{class:'panel'});
+  p.appendChild(el('h2',{},'Documentos controlados'));
+  p.appendChild(el('p',{class:'hint'},'Procedimientos, pautas y formularios (F-xx) con su versión vigente. Base del control documental para SQF.'));
+  const bar=el('div',{class:'rowbtns'}); bar.appendChild(el('div',{class:'spacer'}));
+  if(canCalidad()) bar.appendChild(el('button',{class:'btn accent sm',onclick:()=>formDoc()},'+ Nuevo documento'));
+  p.appendChild(bar);
+  const wrap=el('div',{class:'tbl-wrap'}); const tbody=el('tbody');
+  const tbl=el('table',{}, el('thead',{}, el('tr',{},
+    th('Código'),th('Nombre'),th('Versión'),th('Aprobado'),th('Vigente desde'),th('Estado'),th(''))), tbody);
+  wrap.appendChild(tbl); p.appendChild(wrap); host.appendChild(p);
+  const {data,error}=await sb.from('documentos_controlados').select('*').order('codigo');
+  if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
+  if(!data.length){tbody.appendChild(trMsg('Aún no hay documentos.'));return;}
+  data.forEach(d=>{
+    tbody.appendChild(el('tr',{},
+      td(d.codigo||'—'), td(d.nombre), td('v'+(d.version||'01')), td(d.aprobado_por||'—'),
+      td(d.vigencia_desde||'—'), td(pill(d.activo)),
+      td(canCalidad()?el('button',{class:'link',onclick:()=>formDoc(d)},'Editar'):'')));
+  });
+}
+function formDoc(d){
+  const f={
+    codigo:inp('Código (F-xx)','codigo',d?.codigo||''),
+    nombre:inp('Nombre','nombre',d?.nombre||''),
+    version:inp('Versión','version',d?.version||'01'),
+    aprob:inp('Aprobado por','aprob',d?.aprobado_por||''),
+    vig:inp('Vigente desde','vig',d?.vigencia_desde||hoyISO(),'',' date'),
+    url:inp('Archivo (URL)','url',d?.archivo_url||'','Opcional'),
+  };
+  const chk=checkbox('Vigente (activo)', d? d.activo : true);
+  openModal(d?'Editar documento':'Nuevo documento',
+    [f.codigo.wrap,f.nombre.wrap,f.version.wrap,f.aprob.wrap,f.vig.wrap,fullWrap(f.url.wrap),fullWrap(chk.wrap)],
+    async ()=>{
+      const obj={codigo:f.codigo.el.value.trim()||null,nombre:f.nombre.el.value.trim(),version:f.version.el.value.trim()||'01',
+        aprobado_por:f.aprob.el.value.trim()||null,vigencia_desde:f.vig.el.value||null,archivo_url:f.url.el.value.trim()||null,activo:chk.el.checked};
+      if(!obj.nombre){toast('El nombre es obligatorio');return false;}
+      let r; if(d){r=await sb.from('documentos_controlados').update(obj).eq('id',d.id);} else {r=await sb.from('documentos_controlados').insert(obj);}
+      if(r.error){toast('Error: '+r.error.message);return false;}
+      await bitacora(d?'editar_doc':'crear_doc','documentos_controlados',obj.codigo,obj);
+      toast(d?'Documento actualizado':'Documento creado'); viewCalidad(); return true;
+    });
+}
 
 /* ========================= USUARIOS (admin) ========================= */
 async function viewUsuarios(){
