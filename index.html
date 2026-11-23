@@ -647,72 +647,54 @@ async function viewStock(){
   });
 }
 
-/* ========================= PRODUCCIÓN ========================= */
-let PROD_BANDEJAS=[];
+/* ========================= PRODUCCIÓN (dos etapas) ========================= */
 async function viewProduccion(){
   const v=$('#view'); v.innerHTML='';
   const p=el('div',{class:'panel'});
-  p.appendChild(el('h2',{},'Producción (batch)'));
-  p.appendChild(el('p',{class:'hint'},'Registra un batch: producto, lote de MP usado (FEFO), bandejas y pesos. Descuenta stock y genera el lote de producto terminado en cuarentena.'));
+  p.appendChild(el('h2',{},'Producción (batches)'));
+  p.appendChild(el('p',{class:'hint'},'1) Abre el batch del día (producto + lote de MP). 2) Cada operario carga sus bandejas con el peso. 3) Cuando sale seco, se cierra con el rendimiento y genera el producto terminado.'));
   const bar=el('div',{class:'rowbtns'});
   bar.appendChild(el('div',{class:'spacer'}));
-  if(canOperate()) bar.appendChild(el('button',{class:'btn accent sm',onclick:()=>formProduccion()},'+ Nuevo batch'));
+  if(canOperate()) bar.appendChild(el('button',{class:'btn accent sm',onclick:()=>formAbrirBatch()},'+ Abrir batch'));
   p.appendChild(bar);
   const wrap=el('div',{class:'tbl-wrap'}); const tbody=el('tbody');
   const tbl=el('table',{}, el('thead',{}, el('tr',{},
-    th('Código'),th('Fecha'),th('Producto'),th('Operario'),th('Cargado'),th('Seco'),th('Rend.'),th('Humedad'),th('Estado'))), tbody);
+    th('Código'),th('Fecha'),th('Producto'),th('Operario'),th('Bandejas'),th('Cargado'),th('Seco'),th('Rend.'),th('Estado'),th(''))), tbody);
   wrap.appendChild(tbl); p.appendChild(wrap); v.appendChild(p);
   const {data,error}=await dbList('batches',{ordenCol:'fecha',ordenDir:'desc',limite:150});
   if(error){tbody.appendChild(trMsg('Error: '+error.message));return;}
-  if(!data.length){tbody.appendChild(trMsg('Aún no hay batches. Toca "+ Nuevo batch".'));return;}
-  const _pm=await mapById('productos'); data.forEach(b=>b.productos=_pm[b.producto_id]||null);
+  if(!data.length){tbody.appendChild(trMsg('Aún no hay batches. Toca "+ Abrir batch".'));return;}
+  const _pm=await mapById('productos');
+  const _bd=(await dbList('bandejas',{limite:5000})).data||[];
+  const sumB={}, cntB={};
+  _bd.forEach(x=>{ sumB[x.batch_id]=(sumB[x.batch_id]||0)+(Number(x.kg)||0); cntB[x.batch_id]=(cntB[x.batch_id]||0)+1; });
   data.forEach(b=>{
+    b.productos=_pm[b.producto_id]||null;
+    const enProc=b.estado==='en_proceso';
+    const cargado=enProc?(sumB[b.id]||0):b.peso_total;
+    const acc=el('div',{class:'rowbtns',style:'margin:0'});
+    if(enProc && canOperate()){
+      acc.appendChild(el('button',{class:'link',onclick:()=>formAgregarBandeja(b)},'+ Bandeja'));
+      acc.appendChild(el('button',{class:'link',onclick:()=>formCerrarBatch(b)},'Cerrar'));
+    }
     tbody.appendChild(el('tr',{},
       td(el('b',{},b.codigo)), td(b.fecha||'—'),
       td(b.productos?b.productos.codigo:'—'), td(b.operario||'—'),
-      td(fmtKg(b.peso_total)+' kg'), td(b.peso_seco!=null?fmtKg(b.peso_seco)+' kg':'—'),
+      td(String(cntB[b.id]||0)),
+      td(fmtKg(cargado)+' kg'), td(b.peso_seco!=null?fmtKg(b.peso_seco)+' kg':'—'),
       td(b.rendimiento!=null?Number(b.rendimiento).toFixed(1)+'%':'—'),
-      td(b.humedad!=null?b.humedad+'%':'—'),
-      td(estadoPill(b.estado))));
+      td(estadoPill(b.estado)), td(acc)));
   });
 }
-async function formProduccion(){
+async function formAbrirBatch(){
   const prods=await loadProductos();
   const prodOpts='<option value="">Elige…</option>'+prods.map(p=>
-    `<option value="${p.id}" data-cod="${esc(p.codigo)}" data-mp="${p.materia_prima_id||''}" data-caja="${p.u_por_caja||24}" data-vch="${p.vida_util_chile_m||12}" data-vex="${p.vida_util_export_m||18}">${esc(p.codigo)} · ${esc(p.nombre)} (${p.especie})</option>`).join('');
-  PROD_BANDEJAS=[{kg:''},{kg:''}];
+    `<option value="${p.id}" data-cod="${esc(p.codigo)}" data-mp="${p.materia_prima_id||''}">${esc(p.codigo)} · ${esc(p.nombre)} (${p.especie})</option>`).join('');
   const prodSel=el('select',{class:'field'}); prodSel.innerHTML=prodOpts;
   const fecha=el('input',{class:'field',type:'date',value:hoyISO()});
   const operario=el('input',{class:'field',value:USER.nombre});
   const loteSel=el('select',{class:'field'}); loteSel.innerHTML='<option value="">Elige un producto primero…</option>';
   const loteInfo=el('div',{class:'hint',style:'margin:4px 0 0'});
-  const merma=el('input',{class:'field',type:'number',placeholder:'0'});
-  const seco=el('input',{class:'field',type:'number',placeholder:'kg secos'});
-  const humedad=el('input',{class:'field',type:'number',placeholder:'% (criterio ≤ 5)'});
-  const bolsas=el('input',{class:'field',type:'number',placeholder:'nº bolsas / unidades'});
-  const mercado=el('select',{class:'field'});
-  mercado.innerHTML='<option value="chile">Chile (12 meses)</option><option value="export">Exportación (18 meses)</option>';
-  const obs=el('textarea',{class:'field',rows:'2'});
-  const bandejasBox=el('div'); const totalLine=el('div',{style:'display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;font-size:14px;color:var(--brand-d)'});
-  function renderBandejas(){
-    bandejasBox.innerHTML='';
-    PROD_BANDEJAS.forEach((b,i)=>{
-      const kgIn=el('input',{class:'field',type:'number',value:b.kg,placeholder:'kg',style:'flex:1'});
-      kgIn.addEventListener('input',e=>{PROD_BANDEJAS[i].kg=e.target.value;calc();});
-      const del=el('button',{class:'btn sec sm',onclick:()=>{PROD_BANDEJAS.splice(i,1);renderBandejas();calc();}},'✕');
-      bandejasBox.appendChild(el('div',{style:'display:flex;gap:8px;align-items:center;margin-bottom:6px'},
-        el('span',{style:'width:76px;color:var(--muted);font-size:13px'},'Bandeja '+(i+1)), kgIn, del));
-    });
-  }
-  function calc(){
-    const total=PROD_BANDEJAS.reduce((s,b)=>s+(Number(b.kg)||0),0);
-    const m=Number(merma.value)||0, sc=Number(seco.value)||0;
-    const consumo=total+m, rend= total>0?(sc/total*100):0;
-    totalLine.innerHTML=`<span>Cargado: <b>${total.toFixed(2)} kg</b></span>
-      <span>Consumo stock: <b>${consumo.toFixed(2)} kg</b></span>
-      <span>Rendimiento: <b>${rend.toFixed(1)}%</b></span>`;
-  }
-  merma.addEventListener('input',calc); seco.addEventListener('input',calc);
   prodSel.addEventListener('change',async()=>{
     const opt=prodSel.selectedOptions[0]; const mpId=opt?opt.getAttribute('data-mp'):'';
     loteSel.innerHTML='<option>Cargando…</option>';
@@ -720,52 +702,86 @@ async function formProduccion(){
     const {data}=await dbList('lotes_mp',{filtros:{materia_prima_id:mpId,activo:true,aceptado:true,cantidad_restante:{op:'gt',val:0.0001}},ordenCol:'vencimiento',ordenDir:'asc',nullsLast:true});
     if(!data||!data.length){loteSel.innerHTML='<option value="">Sin stock para esta MP</option>';loteInfo.textContent='No hay lotes disponibles. Registra una recepción primero.';return;}
     loteSel.innerHTML=data.map((l,i)=>`<option value="${l.id}" data-disp="${l.cantidad_restante}">${esc(l.lote_proveedor||'(sin lote)')} · ${fmtKg(l.cantidad_restante)} kg · vence ${l.vencimiento||'s/f'}${i===0?'  ◀ FEFO':''}</option>`).join('');
-    updLote();
+    const o=loteSel.selectedOptions[0]; loteInfo.textContent=o?`Disponible: ${fmtKg(o.getAttribute('data-disp'))} kg`:'';
   });
-  loteSel.addEventListener('change',updLote);
-  function updLote(){const o=loteSel.selectedOptions[0];const d=o?o.getAttribute('data-disp'):null;
-    loteInfo.textContent=d?`Disponible en este lote: ${fmtKg(d)} kg`:'';}
-  renderBandejas(); calc();
-  const addBtn=el('button',{class:'btn sec sm',onclick:()=>{PROD_BANDEJAS.push({kg:''});renderBandejas();}},'+ Agregar bandeja');
+  loteSel.addEventListener('change',()=>{const o=loteSel.selectedOptions[0];loteInfo.textContent=o&&o.getAttribute('data-disp')?`Disponible: ${fmtKg(o.getAttribute('data-disp'))} kg`:'';});
   const body=el('div',{},
-    row2(lab('Fecha',fecha), lab('Operario',operario)),
+    row2(lab('Fecha',fecha), lab('Operario responsable',operario)),
     lab('Producto',prodSel),
-    lab('Lote de MP a usar (FEFO)',loteSel), loteInfo,
-    el('label',{},'Bandejas y pesos'), bandejasBox, addBtn, totalLine,
-    row2(lab('Merma total (kg)',merma), lab('Peso seco total (kg)',seco)),
-    row2(lab('Humedad (%)',humedad), lab('Bolsas / unidades producidas',bolsas)),
-    lab('Mercado (define el vencimiento)',mercado),
-    lab('Observaciones',obs));
-  openCustomModal('Nuevo batch de producción', body, async ()=>{
+    lab('Lote de MP a usar (FEFO)',loteSel), loteInfo);
+  openCustomModal('Abrir batch de producción', body, async ()=>{
     const opt=prodSel.selectedOptions[0];
     if(!opt||!prodSel.value){toast('Elige el producto');return false;}
-    const total=PROD_BANDEJAS.reduce((s,b)=>s+(Number(b.kg)||0),0);
-    if(total<=0){toast('Ingresa el peso de al menos una bandeja');return false;}
     if(!loteSel.value){toast('Elige el lote de MP');return false;}
+    const codigo=`${opt.getAttribute('data-cod')}-${ddmmaaFrom(fecha.value)}`;
+    const bRes=await dbInsert('batches',{codigo,fecha:fecha.value,producto_id:prodSel.value,
+      operario:operario.value.trim()||USER.nombre,peso_total:0,estado:'en_proceso'});
+    if(bRes.error){toast('Error: '+bRes.error.message);return false;}
+    await dbInsert('batch_lotes_mp',{batch_id:bRes.data.id,lote_mp_id:loteSel.value,kg:0});
+    await bitacora('abrir_batch','batches',codigo,null);
+    toast('Batch '+codigo+' abierto. Ahora carguen las bandejas.'); viewProduccion(); return true;
+  });
+}
+async function formAgregarBandeja(b){
+  const {data:bd}=await dbList('bandejas',{filtros:{batch_id:b.id}});
+  const n=(bd||[]).length+1;
+  const total=(bd||[]).reduce((s,x)=>s+(Number(x.kg)||0),0);
+  const kg=el('input',{class:'field',type:'number',placeholder:'kg de esta bandeja'});
+  const body=el('div',{},
+    el('div',{class:'hint'}, `Batch ${b.codigo} · bandejas cargadas: ${(bd||[]).length} · total: ${fmtKg(total)} kg`),
+    lab('Bandeja Nº '+n+' — peso (kg)',kg));
+  openCustomModal('Cargar bandeja', body, async ()=>{
+    const v=Number(kg.value);
+    if(!v||v<=0){toast('Ingresa el peso');return false;}
+    const r=await dbInsert('bandejas',{batch_id:b.id,usuario:USER.nombre,n_bandeja:n,kg:v});
+    if(r.error){toast('Error: '+r.error.message);return false;}
+    await bitacora('bandeja','bandejas',b.codigo,{n,kg:v});
+    toast('Bandeja '+n+' cargada ('+fmtKg(v)+' kg)'); viewProduccion(); return true;
+  });
+}
+async function formCerrarBatch(b){
+  const {data:bd}=await dbList('bandejas',{filtros:{batch_id:b.id}});
+  const total=(bd||[]).reduce((s,x)=>s+(Number(x.kg)||0),0);
+  if(total<=0){ toast('Este batch no tiene bandejas cargadas'); return; }
+  const prod=(await dbList('productos',{filtros:{id:b.producto_id}})).data[0]||{};
+  const {data:bl}=await dbList('batch_lotes_mp',{filtros:{batch_id:b.id}});
+  const loteRow=(bl||[])[0];
+  const loteMp = loteRow ? (await dbList('lotes_mp',{filtros:{id:loteRow.lote_mp_id}})).data[0] : null;
+  const disp = loteMp ? Number(loteMp.cantidad_restante) : 0;
+  const merma=el('input',{class:'field',type:'number',placeholder:'0'});
+  const seco=el('input',{class:'field',type:'number',placeholder:'kg secos'});
+  const humedad=el('input',{class:'field',type:'number',placeholder:'% (≤5)'});
+  const bolsas=el('input',{class:'field',type:'number',placeholder:'nº bolsas/unidades'});
+  const mercado=el('select',{class:'field'});
+  mercado.innerHTML='<option value="chile">Chile (12 meses)</option><option value="export">Exportación (18 meses)</option>';
+  const obs=el('textarea',{class:'field',rows:'2'});
+  const tot=el('div',{class:'totbar'});
+  function calc(){ const m=Number(merma.value)||0, sc=Number(seco.value)||0; const consumo=total+m, rend=total>0?(sc/total*100):0;
+    tot.innerHTML=`<span>Cargado: <b>${fmtKg(total)} kg</b> (${(bd||[]).length} bandejas)</span><span>Consumo: <b>${consumo.toFixed(2)} kg</b></span><span>Rendimiento: <b>${rend.toFixed(1)}%</b></span>`; }
+  merma.addEventListener('input',calc); seco.addEventListener('input',calc); calc();
+  const body=el('div',{},
+    el('div',{class:'trace-h'}, 'Cerrar '+b.codigo+' · '+(prod.nombre||'')),
+    tot,
+    row2(lab('Merma total (kg)',merma), lab('Peso seco total (kg)',seco)),
+    row2(lab('Humedad (%)',humedad), lab('Bolsas / unidades producidas',bolsas)),
+    lab('Mercado (define vencimiento)',mercado),
+    lab('Observaciones',obs));
+  openCustomModal('Cerrar batch', body, async ()=>{
     const m=Number(merma.value)||0, sc=seco.value?Number(seco.value):null, hum=humedad.value?Number(humedad.value):null;
     const consumo=total+m, rend= total>0 && sc!=null?(sc/total*100):null;
-    const disp=Number(loteSel.selectedOptions[0].getAttribute('data-disp'))||0;
-    if(consumo>disp+0.0001){toast(`El consumo (${consumo.toFixed(2)} kg) supera el stock del lote (${fmtKg(disp)} kg). Elige otro lote o ajusta.`);return false;}
-    const prodId=prodSel.value, cod=opt.getAttribute('data-cod');
-    const codigo=`${cod}-${ddmmaaFrom(fecha.value)}`;
-    const uCaja=Number(opt.getAttribute('data-caja'))||24;
-    const vmeses= mercado.value==='export'?Number(opt.getAttribute('data-vex'))||18:Number(opt.getAttribute('data-vch'))||12;
-    const venc=addMonthsISO(fecha.value,vmeses);
+    if(loteMp && consumo>disp+0.0001){ toast(`El consumo (${consumo.toFixed(2)} kg) supera el stock del lote (${fmtKg(disp)} kg).`); return false; }
+    const uCaja=Number(prod.u_por_caja)||24;
+    const vmeses= mercado.value==='export'?(Number(prod.vida_util_export_m)||18):(Number(prod.vida_util_chile_m)||12);
+    const venc=addMonthsISO(b.fecha,vmeses);
     const nBolsas=bolsas.value?Number(bolsas.value):0, cajas=uCaja?Math.floor(nBolsas/uCaja):0;
-    const bRes=await dbInsert('batches',{codigo,fecha:fecha.value,producto_id:prodId,
-      operario:operario.value.trim()||USER.nombre,
-      peso_total:total,merma:m,consumo_mp:consumo,peso_seco:sc,rendimiento:rend,humedad:hum,
-      estado:'cuarentena',observaciones:obs.value.trim()||null});
-    if(bRes.error){toast('Error al crear batch: '+bRes.error.message);return false;}
-    const batchId=bRes.data.id;
-    const brows=PROD_BANDEJAS.filter(b=>Number(b.kg)>0).map((b,i)=>({batch_id:batchId,usuario:USER.nombre,n_bandeja:i+1,kg:Number(b.kg)}));
-    await dbInsertMany('bandejas',brows);
-    await dbInsert('batch_lotes_mp',{batch_id:batchId,lote_mp_id:loteSel.value,kg:consumo});
-    await dbUpdate('lotes_mp',loteSel.value,{cantidad_restante:Math.max(0,disp-consumo)});
-    await dbInsert('lotes_pt',{producto_id:prodId,batch_id:batchId,codigo_lote:codigo,
-      fecha_elab:fecha.value,fecha_venc:venc,mercado:mercado.value,bolsas:nBolsas,cajas,kg:sc,estado:'cuarentena'});
-    await bitacora('produccion','batches',codigo,{total,consumo,rend,hum,bolsas:nBolsas});
-    toast('Batch '+codigo+' registrado. Stock descontado.'); viewProduccion(); return true;
+    const up=await dbUpdate('batches',b.id,{peso_total:total,merma:m,consumo_mp:consumo,peso_seco:sc,rendimiento:rend,humedad:hum,estado:'cuarentena',observaciones:obs.value.trim()||null});
+    if(up.error){toast('Error: '+up.error.message);return false;}
+    if(loteRow) await dbUpdate('batch_lotes_mp',loteRow.id,{kg:consumo});
+    if(loteMp) await dbUpdate('lotes_mp',loteMp.id,{cantidad_restante:Math.max(0,disp-consumo)});
+    await dbInsert('lotes_pt',{producto_id:b.producto_id,batch_id:b.id,codigo_lote:b.codigo,
+      fecha_elab:b.fecha,fecha_venc:venc,mercado:mercado.value,bolsas:nBolsas,cajas,kg:sc,estado:'cuarentena'});
+    await bitacora('cerrar_batch','batches',b.codigo,{total,consumo,rend,hum,bolsas:nBolsas});
+    toast('Batch '+b.codigo+' cerrado. Producto terminado en cuarentena.'); viewProduccion(); return true;
   });
 }
 
