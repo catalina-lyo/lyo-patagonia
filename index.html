@@ -656,6 +656,7 @@ async function viewProduccion(){
   p.appendChild(el('p',{class:'hint'},'1) Abre el batch del día (producto + lote de MP). 2) Cada operario carga sus bandejas con el peso. 3) Cuando sale seco, se cierra con el rendimiento y genera el producto terminado.'));
   const bar=el('div',{class:'rowbtns'});
   bar.appendChild(el('div',{class:'spacer'}));
+  if(canCalidad()) bar.appendChild(el('button',{class:'btn sec sm',onclick:()=>formBatchCompleto()},'+ Batch completo (histórico)'));
   if(canOperate()) bar.appendChild(el('button',{class:'btn accent sm',onclick:()=>formAbrirBatch()},'+ Abrir batch'));
   p.appendChild(bar);
   const wrap=el('div',{class:'tbl-wrap'}); const tbody=el('tbody');
@@ -784,6 +785,68 @@ async function formCerrarBatch(b){
       fecha_elab:b.fecha,fecha_venc:venc,mercado:mercado.value,bolsas:nBolsas,cajas,kg:sc,estado:'cuarentena'});
     await bitacora('cerrar_batch','batches',b.codigo,{total,consumo,rend,hum,bolsas:nBolsas});
     toast('Batch '+b.codigo+' cerrado. Producto terminado en cuarentena.'); viewProduccion(); return true;
+  });
+}
+
+/* ---- Registrar un batch ya hecho, completo en un paso (histórico) ---- */
+async function formBatchCompleto(){
+  const prods=await loadProductos();
+  const prodOpts='<option value="">Elige…</option>'+prods.map(p=>
+    `<option value="${p.id}" data-cod="${esc(p.codigo)}" data-mp="${p.materia_prima_id||''}" data-caja="${p.u_por_caja||24}" data-vch="${p.vida_util_chile_m||12}" data-vex="${p.vida_util_export_m||18}">${esc(p.codigo)} · ${esc(p.nombre)} (${p.especie})</option>`).join('');
+  const prodSel=el('select',{class:'field'}); prodSel.innerHTML=prodOpts;
+  const fecha=el('input',{class:'field',type:'date',value:hoyISO()});
+  const operario=el('input',{class:'field',placeholder:'quién lo hizo'});
+  const loteSel=el('select',{class:'field'}); loteSel.innerHTML='<option value="">Elige el producto primero…</option>';
+  const loteInfo=el('div',{class:'hint',style:'margin:4px 0 0'});
+  const cargado=el('input',{class:'field',type:'number',placeholder:'kg cargados (total)'});
+  const merma=el('input',{class:'field',type:'number',placeholder:'0'});
+  const seco=el('input',{class:'field',type:'number',placeholder:'kg secos'});
+  const humedad=el('input',{class:'field',type:'number',placeholder:'%'});
+  const bolsas=el('input',{class:'field',type:'number',placeholder:'nº bolsas/unidades'});
+  const mercado=el('select',{class:'field'}); mercado.innerHTML='<option value="chile">Chile (12 meses)</option><option value="export">Exportación (18 meses)</option>';
+  const obs=el('textarea',{class:'field',rows:'2'});
+  prodSel.addEventListener('change',async()=>{
+    const opt=prodSel.selectedOptions[0]; const mpId=opt?opt.getAttribute('data-mp'):'';
+    loteSel.innerHTML='<option>Cargando…</option>';
+    if(!mpId){loteSel.innerHTML='<option value="">(sin MP asignada)</option>';loteInfo.textContent='';return;}
+    const {data}=await dbList('lotes_mp',{filtros:{materia_prima_id:mpId,activo:true,aceptado:true,cantidad_restante:{op:'gt',val:0.0001}},ordenCol:'vencimiento',ordenDir:'asc',nullsLast:true});
+    if(!data||!data.length){loteSel.innerHTML='<option value="">Sin stock para esta MP</option>';loteInfo.textContent='';return;}
+    loteSel.innerHTML=data.map((l,i)=>`<option value="${l.id}" data-disp="${l.cantidad_restante}">${esc(l.lote_proveedor||'(sin lote)')} · ${fmtKg(l.cantidad_restante)} kg · vence ${l.vencimiento||'s/f'}${i===0?'  ◀ FEFO':''}</option>`).join('');
+    const o=loteSel.selectedOptions[0]; loteInfo.textContent=o?`Disponible: ${fmtKg(o.getAttribute('data-disp'))} kg`:'';
+  });
+  loteSel.addEventListener('change',()=>{const o=loteSel.selectedOptions[0];loteInfo.textContent=o&&o.getAttribute('data-disp')?`Disponible: ${fmtKg(o.getAttribute('data-disp'))} kg`:'';});
+  const body=el('div',{},
+    row2(lab('Fecha',fecha), lab('Operario',operario)),
+    lab('Producto',prodSel),
+    lab('Lote de MP usado (FEFO)',loteSel), loteInfo,
+    row2(lab('Kg cargados (total)',cargado), lab('Merma (kg)',merma)),
+    row2(lab('Peso seco (kg)',seco), lab('Humedad (%)',humedad)),
+    row2(lab('Bolsas/unidades',bolsas), lab('Mercado',mercado)),
+    lab('Observaciones',obs));
+  openCustomModal('Registrar batch completo (histórico)', body, async ()=>{
+    const opt=prodSel.selectedOptions[0];
+    if(!opt||!prodSel.value){toast('Elige el producto');return false;}
+    const total=Number(cargado.value);
+    if(!total||total<=0){toast('Ingresa los kg cargados');return false;}
+    if(!loteSel.value){toast('Elige el lote de MP');return false;}
+    const m=Number(merma.value)||0, sc=seco.value?Number(seco.value):null, hum=humedad.value?Number(humedad.value):null;
+    const consumo=total+m, rend= total>0 && sc!=null?(sc/total*100):null;
+    const disp=Number(loteSel.selectedOptions[0].getAttribute('data-disp'))||0;
+    if(consumo>disp+0.0001){toast(`El consumo (${consumo.toFixed(2)} kg) supera el stock del lote (${fmtKg(disp)} kg).`);return false;}
+    const codigo=`${opt.getAttribute('data-cod')}-${ddmmaaFrom(fecha.value)}`;
+    const uCaja=Number(opt.getAttribute('data-caja'))||24;
+    const vmeses= mercado.value==='export'?Number(opt.getAttribute('data-vex'))||18:Number(opt.getAttribute('data-vch'))||12;
+    const venc=addMonthsISO(fecha.value,vmeses);
+    const nBolsas=bolsas.value?Number(bolsas.value):0, cajas=uCaja?Math.floor(nBolsas/uCaja):0;
+    const bRes=await dbInsert('batches',{codigo,fecha:fecha.value,producto_id:prodSel.value,operario:operario.value.trim()||null,
+      peso_total:total,merma:m,consumo_mp:consumo,peso_seco:sc,rendimiento:rend,humedad:hum,estado:'cuarentena',observaciones:obs.value.trim()||null});
+    if(bRes.error){toast('Error: '+bRes.error.message);return false;}
+    await dbInsert('batch_lotes_mp',{batch_id:bRes.data.id,lote_mp_id:loteSel.value,kg:consumo});
+    await dbUpdate('lotes_mp',loteSel.value,{cantidad_restante:Math.max(0,disp-consumo)});
+    await dbInsert('lotes_pt',{producto_id:prodSel.value,batch_id:bRes.data.id,codigo_lote:codigo,
+      fecha_elab:fecha.value,fecha_venc:venc,mercado:mercado.value,bolsas:nBolsas,cajas,kg:sc,estado:'cuarentena'});
+    await bitacora('batch_historico','batches',codigo,{total,consumo,rend,hum,bolsas:nBolsas});
+    toast('Batch '+codigo+' registrado.'); viewProduccion(); return true;
   });
 }
 
