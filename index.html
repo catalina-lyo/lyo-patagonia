@@ -649,6 +649,7 @@ async function viewStock(){
 
 /* ========================= PRODUCCIÓN (dos etapas) ========================= */
 async function viewProduccion(){
+  if(USER.rol==='operario') return viewProduccionOperario();
   const v=$('#view'); v.innerHTML='';
   const p=el('div',{class:'panel'});
   p.appendChild(el('h2',{},'Producción (batches)'));
@@ -673,7 +674,8 @@ async function viewProduccion(){
     const enProc=b.estado==='en_proceso';
     const cargado=enProc?(sumB[b.id]||0):b.peso_total;
     const acc=el('div',{class:'rowbtns',style:'margin:0'});
-    if(enProc && canOperate()){
+    acc.appendChild(el('button',{class:'link',onclick:()=>verBatchBandejas(b)},'Ver bandejas'));
+    if(enProc){
       acc.appendChild(el('button',{class:'link',onclick:()=>formAgregarBandeja(b)},'+ Bandeja'));
       acc.appendChild(el('button',{class:'link',onclick:()=>formCerrarBatch(b)},'Cerrar'));
     }
@@ -783,6 +785,52 @@ async function formCerrarBatch(b){
     await bitacora('cerrar_batch','batches',b.codigo,{total,consumo,rend,hum,bolsas:nBolsas});
     toast('Batch '+b.codigo+' cerrado. Producto terminado en cuarentena.'); viewProduccion(); return true;
   });
+}
+
+/* ---- Vista simple del operario: solo carga sus bandejas de hoy ---- */
+async function viewProduccionOperario(){
+  const v=$('#view'); v.innerHTML='';
+  const p=el('div',{class:'panel'});
+  p.appendChild(el('h2',{},'Carga de bandejas'));
+  p.appendChild(el('p',{class:'hint'},'Ingresa el peso de cada bandeja que cargaste hoy. Solo ves lo tuyo.'));
+  v.appendChild(p);
+  const {data:batches}=await dbList('batches',{filtros:{estado:'en_proceso'},ordenCol:'fecha',ordenDir:'desc'});
+  if(!batches||!batches.length){ p.appendChild(el('p',{class:'empty'},'No hay batch abierto en este momento. Avisa a tu jefatura.')); return; }
+  const _pm=await mapById('productos');
+  const _bd=(await dbList('bandejas',{limite:5000})).data||[];
+  batches.forEach(b=>{
+    const prod=_pm[b.producto_id];
+    const mias=_bd.filter(x=>x.batch_id===b.id && x.usuario===USER.nombre).sort((a,c)=>a.n_bandeja-c.n_bandeja);
+    const card=el('div',{class:'panel'});
+    card.appendChild(el('h3',{style:'margin:0 0 2px'}, b.codigo));
+    card.appendChild(el('div',{class:'hint',style:'margin:0 0 10px'}, prod?(prod.nombre+' ('+prod.especie+')'):''));
+    card.appendChild(el('button',{class:'btn accent',onclick:()=>formAgregarBandeja(b)},'+ Cargar una bandeja'));
+    if(mias.length){
+      card.appendChild(el('div',{class:'hint',style:'margin:12px 0 4px'},'Tus bandejas de hoy ('+mias.length+'):'));
+      const ul=el('div',{style:'display:flex;gap:8px;flex-wrap:wrap'});
+      mias.forEach(x=>ul.appendChild(el('span',{class:'pill on'},'#'+x.n_bandeja+' · '+fmtKg(x.kg)+' kg')));
+      card.appendChild(ul);
+    } else { card.appendChild(el('p',{class:'hint',style:'margin-top:12px'},'Aún no has cargado bandejas en este batch.')); }
+    v.appendChild(card);
+  });
+}
+/* ---- Detalle de bandejas de un batch (jefatura ve todo) ---- */
+async function verBatchBandejas(b){
+  const {data:bd}=await dbList('bandejas',{filtros:{batch_id:b.id},ordenCol:'n_bandeja'});
+  const total=(bd||[]).reduce((s,x)=>s+(Number(x.kg)||0),0);
+  const tdS='padding:6px;border:1px solid #ddd';
+  const rows=(bd||[]).map(x=>`<tr><td style="${tdS}">#${x.n_bandeja}</td><td style="${tdS}">${esc(x.usuario||'—')}</td><td style="${tdS};text-align:right">${fmtKg(x.kg)} kg</td></tr>`).join('')
+    || `<tr><td style="${tdS}" colspan="3">Sin bandejas cargadas aún.</td></tr>`;
+  const body=el('div',{});
+  body.innerHTML=`<p class="hint">Batch ${esc(b.codigo)} · ${(bd||[]).length} bandejas · total <b>${fmtKg(total)} kg</b></p>
+    <table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="background:#eef3ee">
+    <th style="${tdS};text-align:left">Bandeja</th><th style="${tdS};text-align:left">Operario</th><th style="${tdS};text-align:right">Peso</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+  const root=$('#modalRoot');
+  const modal=el('div',{class:'modal',style:'max-width:540px'}, el('h3',{},'Bandejas del batch'), body,
+    el('div',{class:'actions'}, el('button',{class:'btn sec',onclick:()=>root.innerHTML=''},'Cerrar')));
+  const ov=el('div',{class:'ov',onclick:e=>{if(e.target===ov)root.innerHTML='';}}, modal);
+  root.innerHTML=''; root.appendChild(ov);
 }
 
 /* ========================= LIBERACIÓN ========================= */
