@@ -787,32 +787,57 @@ async function formCerrarBatch(b){
   });
 }
 
-/* ---- Vista simple del operario: solo carga sus bandejas de hoy ---- */
+/* ---- Vista simple del operario: elige su producto y carga sus bandejas ---- */
+let OP_PROD='';
 async function viewProduccionOperario(){
   const v=$('#view'); v.innerHTML='';
   const p=el('div',{class:'panel'});
   p.appendChild(el('h2',{},'Carga de bandejas'));
-  p.appendChild(el('p',{class:'hint'},'Ingresa el peso de cada bandeja que cargaste hoy. Solo ves lo tuyo.'));
+  p.appendChild(el('p',{class:'hint'},'Elige el producto con el que estás trabajando y carga el peso de cada bandeja. Solo ves lo tuyo.'));
+  const prods=await loadProductos();
+  const sel=el('select',{class:'field',style:'max-width:380px'});
+  sel.innerHTML='<option value="">Elige el producto…</option>'+prods.map(pr=>
+    `<option value="${pr.id}" data-cod="${esc(pr.codigo)}" data-mp="${pr.materia_prima_id||''}">${esc(pr.codigo)} · ${esc(pr.nombre)} (${pr.especie})</option>`).join('');
+  if(OP_PROD) sel.value=OP_PROD;
+  const misBox=el('div',{style:'margin-top:14px'});
+  const addBtn=el('button',{class:'btn accent',onclick:()=>cargarBandejaOperario(sel)},'+ Cargar una bandeja');
+  p.appendChild(lab('Producto que estás trabajando', sel));
+  p.appendChild(el('div',{style:'margin-top:10px'}, addBtn));
+  p.appendChild(misBox);
   v.appendChild(p);
-  const {data:batches}=await dbList('batches',{filtros:{estado:'en_proceso'},ordenCol:'fecha',ordenDir:'desc'});
-  if(!batches||!batches.length){ p.appendChild(el('p',{class:'empty'},'No hay batch abierto en este momento. Avisa a tu jefatura.')); return; }
-  const _pm=await mapById('productos');
-  const _bd=(await dbList('bandejas',{limite:5000})).data||[];
-  batches.forEach(b=>{
-    const prod=_pm[b.producto_id];
-    const mias=_bd.filter(x=>x.batch_id===b.id && x.usuario===USER.nombre).sort((a,c)=>a.n_bandeja-c.n_bandeja);
-    const card=el('div',{class:'panel'});
-    card.appendChild(el('h3',{style:'margin:0 0 2px'}, b.codigo));
-    card.appendChild(el('div',{class:'hint',style:'margin:0 0 10px'}, prod?(prod.nombre+' ('+prod.especie+')'):''));
-    card.appendChild(el('button',{class:'btn accent',onclick:()=>formAgregarBandeja(b)},'+ Cargar una bandeja'));
-    if(mias.length){
-      card.appendChild(el('div',{class:'hint',style:'margin:12px 0 4px'},'Tus bandejas de hoy ('+mias.length+'):'));
-      const ul=el('div',{style:'display:flex;gap:8px;flex-wrap:wrap'});
-      mias.forEach(x=>ul.appendChild(el('span',{class:'pill on'},'#'+x.n_bandeja+' · '+fmtKg(x.kg)+' kg')));
-      card.appendChild(ul);
-    } else { card.appendChild(el('p',{class:'hint',style:'margin-top:12px'},'Aún no has cargado bandejas en este batch.')); }
-    v.appendChild(card);
-  });
+  sel.addEventListener('change',()=>{ OP_PROD=sel.value; refrescarMisBandejas(sel.value, misBox); });
+  await refrescarMisBandejas(sel.value, misBox);
+}
+async function refrescarMisBandejas(prodId, box){
+  box.innerHTML='';
+  if(!prodId) return;
+  const {data:bb}=await dbList('batches',{filtros:{producto_id:prodId,estado:'en_proceso'},ordenCol:'fecha',ordenDir:'desc'});
+  const batch=(bb||[])[0];
+  if(!batch){ box.appendChild(el('p',{class:'hint'},'Aún no hay carga de este producto. Al cargar la primera bandeja se inicia.')); return; }
+  const {data:bd}=await dbList('bandejas',{filtros:{batch_id:batch.id}});
+  const mias=(bd||[]).filter(x=>x.usuario===USER.nombre).sort((a,c)=>a.n_bandeja-c.n_bandeja);
+  box.appendChild(el('div',{class:'hint'},'Batch '+batch.codigo+' · tus bandejas cargadas: '+mias.length));
+  if(mias.length){ const ul=el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;margin-top:6px'});
+    mias.forEach(x=>ul.appendChild(el('span',{class:'pill on'},'#'+x.n_bandeja+' · '+fmtKg(x.kg)+' kg'))); box.appendChild(ul); }
+}
+async function cargarBandejaOperario(sel){
+  const opt=sel.selectedOptions[0];
+  if(!opt||!sel.value){ toast('Primero elige el producto'); return; }
+  OP_PROD=sel.value;
+  let {data:bb}=await dbList('batches',{filtros:{producto_id:sel.value,estado:'en_proceso'},ordenCol:'fecha',ordenDir:'desc'});
+  let batch=(bb||[])[0];
+  if(!batch){
+    const mpId=opt.getAttribute('data-mp');
+    const {data:lotes}=await dbList('lotes_mp',{filtros:{materia_prima_id:mpId,activo:true,aceptado:true,cantidad_restante:{op:'gt',val:0.0001}},ordenCol:'vencimiento',ordenDir:'asc',nullsLast:true});
+    if(!lotes||!lotes.length){ toast('No hay stock de esa materia prima. Avisa a jefatura.'); return; }
+    const codigo=opt.getAttribute('data-cod')+'-'+ddmmaaFrom(hoyISO());
+    const bRes=await dbInsert('batches',{codigo,fecha:hoyISO(),producto_id:sel.value,operario:USER.nombre,peso_total:0,estado:'en_proceso'});
+    if(bRes.error){ toast('Error: '+bRes.error.message); return; }
+    await dbInsert('batch_lotes_mp',{batch_id:bRes.data.id,lote_mp_id:lotes[0].id,kg:0});
+    await bitacora('abrir_batch','batches',codigo,null);
+    batch={id:bRes.data.id, codigo};
+  }
+  formAgregarBandeja(batch);
 }
 /* ---- Detalle de bandejas de un batch (jefatura ve todo) ---- */
 async function verBatchBandejas(b){
