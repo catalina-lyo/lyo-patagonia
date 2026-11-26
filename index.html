@@ -680,6 +680,9 @@ async function viewProduccion(){
       acc.appendChild(el('button',{class:'link',onclick:()=>formAgregarBandeja(b)},'+ Bandeja'));
       acc.appendChild(el('button',{class:'link',onclick:()=>formCerrarBatch(b)},'Cerrar'));
     }
+    if(b.estado==='cuarentena'){
+      acc.appendChild(el('button',{class:'link',onclick:()=>formConfirmarCajas(b)},'Confirmar cajas'));
+    }
     tbody.appendChild(el('tr',{},
       td(el('b',{},b.codigo)), td(b.fecha||'—'),
       td(b.productos?b.productos.codigo:'—'), td(b.operario||'—'),
@@ -881,18 +884,34 @@ async function refrescarMisBandejas(prodId, box){
   if(!prodId) return;
   const {data:bb}=await dbList('batches',{filtros:{producto_id:prodId,estado:'en_proceso'},ordenCol:'fecha',ordenDir:'desc'});
   const batch=(bb||[])[0];
-  if(!batch){ box.appendChild(el('p',{class:'hint'},'Aún no hay carga de este producto. Al cargar la primera bandeja se inicia.')); return; }
-  const {data:bd}=await dbList('bandejas',{filtros:{batch_id:batch.id}});
-  const todas=(bd||[]);
-  const totalKg=todas.reduce((s,x)=>s+(Number(x.kg)||0),0);
-  const mias=todas.filter(x=>x.usuario===USER.nombre).sort((a,c)=>a.n_bandeja-c.n_bandeja);
-  box.appendChild(el('div',{class:'hint'},'Batch '+batch.codigo+' (en proceso) · '+todas.length+' bandejas en total · '+fmtKg(totalKg)+' kg'));
-  box.appendChild(el('div',{class:'hint'},'Tus bandejas cargadas: '+mias.length));
-  if(mias.length){ const ul=el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;margin-top:6px'});
-    mias.forEach(x=>ul.appendChild(el('span',{class:'pill on'},'#'+x.n_bandeja+' · '+fmtKg(x.kg)+' kg'))); box.appendChild(ul); }
-  const cerrar=el('button',{class:'btn sec',style:'margin-top:14px',onclick:()=>formCerrarBatchOperario(batch)},'Registrar kg que salieron (cierre del batch)');
-  box.appendChild(el('div',{class:'hint',style:'margin-top:14px'},'Cuando el batch salga del liofilizador, anota los kg que salieron:'));
-  box.appendChild(cerrar);
+  if(batch){
+    const {data:bd}=await dbList('bandejas',{filtros:{batch_id:batch.id}});
+    const todas=(bd||[]);
+    const totalKg=todas.reduce((s,x)=>s+(Number(x.kg)||0),0);
+    const mias=todas.filter(x=>x.usuario===USER.nombre).sort((a,c)=>a.n_bandeja-c.n_bandeja);
+    box.appendChild(el('div',{class:'hint'},'Batch '+batch.codigo+' (en proceso) · '+todas.length+' bandejas en total · '+fmtKg(totalKg)+' kg'));
+    box.appendChild(el('div',{class:'hint'},'Tus bandejas cargadas: '+mias.length));
+    if(mias.length){ const ul=el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;margin-top:6px'});
+      mias.forEach(x=>ul.appendChild(el('span',{class:'pill on'},'#'+x.n_bandeja+' · '+fmtKg(x.kg)+' kg'))); box.appendChild(ul); }
+    box.appendChild(el('div',{class:'hint',style:'margin-top:14px'},'Cuando el batch salga del liofilizador, anota los kg que salieron:'));
+    box.appendChild(el('button',{class:'btn sec',style:'margin-top:6px',onclick:()=>formCerrarBatchOperario(batch)},'Registrar kg que salieron (cierre del batch)'));
+  } else {
+    box.appendChild(el('p',{class:'hint'},'Aún no hay carga en proceso de este producto. Al cargar la primera bandeja se inicia.'));
+  }
+  // Batch que ya salió y está pendiente de confirmar las cajas encajadas
+  const {data:cb}=await dbList('batches',{filtros:{producto_id:prodId,estado:'cuarentena'},ordenCol:'fecha',ordenDir:'desc',limite:5});
+  for(const cbatch of (cb||[])){
+    const {data:pt}=await dbList('lotes_pt',{filtros:{batch_id:cbatch.id}});
+    const lp=(pt||[])[0];
+    if(lp && lp.bolsas_confirmadas==null){
+      const card=el('div',{style:'margin-top:16px;padding:12px;border:1px dashed #b9c7b9;border-radius:10px;background:#f6faf6'});
+      card.appendChild(el('div',{class:'hint'},'Batch '+cbatch.codigo+' ya salió del liofilizador · bolsas calculadas por peso: '+(lp.bolsas||0)+'.'));
+      card.appendChild(el('div',{class:'hint'},'La persona que encajó: confirma cuántas cajas salieron en total.'));
+      card.appendChild(el('button',{class:'btn accent',style:'margin-top:8px',onclick:()=>formConfirmarCajas(cbatch,lp)},'Confirmar cajas encajadas'));
+      box.appendChild(card);
+      break;
+    }
+  }
 }
 async function formCerrarBatchOperario(batch){
   const {data:bd}=await dbList('bandejas',{filtros:{batch_id:batch.id}});
@@ -936,8 +955,47 @@ async function formCerrarBatchOperario(batch){
     await dbInsert('lotes_pt',{producto_id:batch.producto_id,batch_id:batch.id,codigo_lote:batch.codigo,
       fecha_elab:batch.fecha,fecha_venc:venc,mercado:mercado.value,bolsas:nBolsas,cajas,kg:sc,estado:'cuarentena'});
     await bitacora('cerrar_batch_op','batches',batch.codigo,{total,consumo,seco:sc,bolsas:nBolsas});
-    toast('Registrado: '+nBolsas+' bolsas. Queda en cuarentena para que Calidad verifique.');
+    toast('Registrado: '+nBolsas+' bolsas. Ahora falta confirmar las cajas encajadas.');
     viewProduccionOperario();
+    return true;
+  });
+}
+async function formConfirmarCajas(batch, lp){
+  if(!lp){ const {data:pt}=await dbList('lotes_pt',{filtros:{batch_id:batch.id}}); lp=(pt||[])[0]; }
+  if(!lp){ toast('Este batch aún no tiene producto terminado. Primero registra los kg que salieron.'); return; }
+  const prod=(await dbList('productos',{filtros:{id:batch.producto_id}})).data[0]||{};
+  const uCaja=Number(prod.u_por_caja)||0;           // 0 = se vende por bolsas (ej. tráquea)
+  const esperadas=Number(lp.bolsas)||0;             // bolsas calculadas por peso
+  const cajasEsp = uCaja? Math.floor(esperadas/uCaja):0;
+  const sueltasEsp = uCaja? (esperadas - cajasEsp*uCaja):esperadas;
+  const cajas=el('input',{class:'field',type:'number',placeholder:'nº de cajas'});
+  const sueltas=el('input',{class:'field',type:'number',placeholder:'bolsas sueltas (fuera de caja)'});
+  const bolsasDir=el('input',{class:'field',type:'number',placeholder:'nº de bolsas'});
+  if(uCaja && lp.cajas_confirmadas!=null){ cajas.value=lp.cajas_confirmadas; sueltas.value=lp.bolsas_sueltas||0; }
+  if(!uCaja && lp.bolsas_confirmadas!=null){ bolsasDir.value=lp.bolsas_confirmadas; }
+  const prev=el('div',{class:'totbar'});
+  function calc(){
+    const conf = uCaja ? ((Number(cajas.value)||0)*uCaja + (Number(sueltas.value)||0)) : (Number(bolsasDir.value)||0);
+    const diff = conf-esperadas;
+    prev.innerHTML=`<span>Esperadas (por peso): <b>${esperadas}</b> bolsas</span><span>Confirmadas: <b>${conf}</b></span><span>Diferencia: <b style="color:${diff===0?'#2e7d32':'#b26a00'}">${diff>0?'+':''}${diff}</b></span>`;
+  }
+  [cajas,sueltas,bolsasDir].forEach(i=>i.addEventListener('input',calc)); calc();
+  const body=el('div',{},
+    el('div',{class:'hint'},'Batch '+batch.codigo+' · '+(prod.nombre||'')+(uCaja?(' · cajas de '+uCaja+' unidades de 40 g'):' · se vende por bolsas')),
+    el('div',{class:'hint'},'Por peso deberían haber salido ~'+esperadas+' bolsas'+(uCaja?(' ('+cajasEsp+' cajas y '+sueltasEsp+' sueltas)'):'')+'.'),
+    uCaja? row2(lab('Cajas que salieron',cajas), lab('Bolsas sueltas',sueltas)) : lab('Bolsas que salieron',bolsasDir),
+    prev);
+  openCustomModal('Confirmar cajas encajadas', body, async ()=>{
+    let conf, nCajas=null, nSueltas=null;
+    if(uCaja){ nCajas=Number(cajas.value)||0; nSueltas=Number(sueltas.value)||0; if(nCajas<=0 && nSueltas<=0){ toast('Ingresa las cajas que salieron'); return false; } conf=nCajas*uCaja+nSueltas; }
+    else { conf=Number(bolsasDir.value)||0; if(conf<=0){ toast('Ingresa las bolsas que salieron'); return false; } }
+    const up=await dbUpdate('lotes_pt',lp.id,{cajas_confirmadas:nCajas,bolsas_sueltas:nSueltas,bolsas_confirmadas:conf,
+      cajas:(uCaja?nCajas:(lp.cajas||0)),encajado_por:USER.nombre,encajado_at:new Date().toISOString()});
+    if(up.error){ toast('Error: '+up.error.message); return false; }
+    await bitacora('encajado','lotes_pt',batch.codigo,{esperadas,confirmadas:conf,cajas:nCajas,sueltas:nSueltas});
+    const diff=conf-esperadas;
+    toast('Encajado: '+conf+' bolsas'+(diff?(' (dif '+(diff>0?'+':'')+diff+' vs esperado)'):' ✓ coincide'));
+    if(USER.rol==='operario') viewProduccionOperario(); else viewProduccion();
     return true;
   });
 }
