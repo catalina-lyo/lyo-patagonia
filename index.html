@@ -761,6 +761,9 @@ async function formCerrarBatch(b){
   const tot=el('div',{class:'totbar'});
   function calc(){ const m=Number(merma.value)||0, sc=Number(seco.value)||0; const consumo=total+m, rend=total>0?(sc/total*100):0;
     tot.innerHTML=`<span>Cargado: <b>${fmtKg(total)} kg</b> (${(bd||[]).length} bandejas)</span><span>Consumo: <b>${consumo.toFixed(2)} kg</b></span><span>Rendimiento: <b>${rend.toFixed(1)}%</b></span>`; }
+  const gramajeC=Number(prod.gramaje_g)||40;
+  seco.addEventListener('input',()=>{ if(!bolsas.dataset.touched){ const sc=Number(seco.value)||0; bolsas.value= sc>0?Math.floor(sc*1000/gramajeC):''; } });
+  bolsas.addEventListener('input',()=>{ bolsas.dataset.touched='1'; });
   merma.addEventListener('input',calc); seco.addEventListener('input',calc); calc();
   const body=el('div',{},
     el('div',{class:'trace-h'}, 'Cerrar '+b.codigo+' · '+(prod.nombre||'')),
@@ -792,7 +795,7 @@ async function formCerrarBatch(b){
 async function formBatchCompleto(){
   const prods=await loadProductos();
   const prodOpts='<option value="">Elige…</option>'+prods.map(p=>
-    `<option value="${p.id}" data-cod="${esc(p.codigo)}" data-mp="${p.materia_prima_id||''}" data-caja="${p.u_por_caja||24}" data-vch="${p.vida_util_chile_m||12}" data-vex="${p.vida_util_export_m||18}">${esc(p.codigo)} · ${esc(p.nombre)} (${p.especie})</option>`).join('');
+    `<option value="${p.id}" data-cod="${esc(p.codigo)}" data-mp="${p.materia_prima_id||''}" data-caja="${p.u_por_caja||24}" data-vch="${p.vida_util_chile_m||12}" data-vex="${p.vida_util_export_m||18}" data-gram="${p.gramaje_g||40}">${esc(p.codigo)} · ${esc(p.nombre)} (${p.especie})</option>`).join('');
   const prodSel=el('select',{class:'field'}); prodSel.innerHTML=prodOpts;
   const fecha=el('input',{class:'field',type:'date',value:hoyISO()});
   const operario=el('input',{class:'field',placeholder:'quién lo hizo'});
@@ -815,6 +818,8 @@ async function formBatchCompleto(){
     const o=loteSel.selectedOptions[0]; loteInfo.textContent=o?`Disponible: ${fmtKg(o.getAttribute('data-disp'))} kg`:'';
   });
   loteSel.addEventListener('change',()=>{const o=loteSel.selectedOptions[0];loteInfo.textContent=o&&o.getAttribute('data-disp')?`Disponible: ${fmtKg(o.getAttribute('data-disp'))} kg`:'';});
+  seco.addEventListener('input',()=>{ const o=prodSel.selectedOptions[0]; const g=o?Number(o.getAttribute('data-gram'))||40:40; if(!bolsas.dataset.touched){ const sc=Number(seco.value)||0; bolsas.value= sc>0?Math.floor(sc*1000/g):''; } });
+  bolsas.addEventListener('input',()=>{ bolsas.dataset.touched='1'; });
   const body=el('div',{},
     row2(lab('Fecha',fecha), lab('Operario',operario)),
     lab('Producto',prodSel),
@@ -878,10 +883,63 @@ async function refrescarMisBandejas(prodId, box){
   const batch=(bb||[])[0];
   if(!batch){ box.appendChild(el('p',{class:'hint'},'Aún no hay carga de este producto. Al cargar la primera bandeja se inicia.')); return; }
   const {data:bd}=await dbList('bandejas',{filtros:{batch_id:batch.id}});
-  const mias=(bd||[]).filter(x=>x.usuario===USER.nombre).sort((a,c)=>a.n_bandeja-c.n_bandeja);
-  box.appendChild(el('div',{class:'hint'},'Batch '+batch.codigo+' · tus bandejas cargadas: '+mias.length));
+  const todas=(bd||[]);
+  const totalKg=todas.reduce((s,x)=>s+(Number(x.kg)||0),0);
+  const mias=todas.filter(x=>x.usuario===USER.nombre).sort((a,c)=>a.n_bandeja-c.n_bandeja);
+  box.appendChild(el('div',{class:'hint'},'Batch '+batch.codigo+' (en proceso) · '+todas.length+' bandejas en total · '+fmtKg(totalKg)+' kg'));
+  box.appendChild(el('div',{class:'hint'},'Tus bandejas cargadas: '+mias.length));
   if(mias.length){ const ul=el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;margin-top:6px'});
     mias.forEach(x=>ul.appendChild(el('span',{class:'pill on'},'#'+x.n_bandeja+' · '+fmtKg(x.kg)+' kg'))); box.appendChild(ul); }
+  const cerrar=el('button',{class:'btn sec',style:'margin-top:14px',onclick:()=>formCerrarBatchOperario(batch)},'Registrar kg que salieron (cierre del batch)');
+  box.appendChild(el('div',{class:'hint',style:'margin-top:14px'},'Cuando el batch salga del liofilizador, anota los kg que salieron:'));
+  box.appendChild(cerrar);
+}
+async function formCerrarBatchOperario(batch){
+  const {data:bd}=await dbList('bandejas',{filtros:{batch_id:batch.id}});
+  const total=(bd||[]).reduce((s,x)=>s+(Number(x.kg)||0),0);
+  if(total<=0){ toast('Este batch aún no tiene bandejas cargadas'); return; }
+  const prod=(await dbList('productos',{filtros:{id:batch.producto_id}})).data[0]||{};
+  const gramaje=Number(prod.gramaje_g)||40;
+  const {data:bl}=await dbList('batch_lotes_mp',{filtros:{batch_id:batch.id}});
+  const loteRow=(bl||[])[0];
+  const loteMp = loteRow ? (await dbList('lotes_mp',{filtros:{id:loteRow.lote_mp_id}})).data[0] : null;
+  const disp = loteMp ? Number(loteMp.cantidad_restante) : 0;
+  const seco=el('input',{class:'field',type:'number',placeholder:'kg que salieron del liofilizador'});
+  const humedad=el('input',{class:'field',type:'number',placeholder:'% (si lo mediste)'});
+  const merma=el('input',{class:'field',type:'number',placeholder:'0'});
+  const mercado=el('select',{class:'field'});
+  mercado.innerHTML='<option value="chile">Chile (12 meses)</option><option value="export">Exportación (18 meses)</option>';
+  const prev=el('div',{class:'totbar'});
+  function calc(){ const sc=Number(seco.value)||0; const nb=sc>0?Math.floor(sc*1000/gramaje):0; const rend=total>0?(sc/total*100):0;
+    prev.innerHTML=`<span>Entró: <b>${fmtKg(total)} kg</b></span><span>Bolsas (${gramaje} g): <b>${nb}</b></span><span>Rendimiento: <b>${rend.toFixed(1)}%</b></span>`; }
+  seco.addEventListener('input',calc); calc();
+  const body=el('div',{},
+    el('div',{class:'hint'}, 'Batch '+batch.codigo+' · '+(prod.nombre||'')+' · entraron '+fmtKg(total)+' kg'),
+    lab('¿Cuántos kg salieron? (peso seco)',seco),
+    prev,
+    row2(lab('Humedad (%)',humedad), lab('Merma (kg)',merma)),
+    lab('Mercado (define vencimiento)',mercado));
+  openCustomModal('Registrar kg que salieron', body, async ()=>{
+    const sc=seco.value?Number(seco.value):null;
+    if(!sc||sc<=0){ toast('Ingresa los kg que salieron'); return false; }
+    const m=Number(merma.value)||0, hum=humedad.value?Number(humedad.value):null;
+    const consumo=total+m, rend= total>0?(sc/total*100):null;
+    if(loteMp && consumo>disp+0.0001){ toast(`El consumo (${consumo.toFixed(2)} kg) supera el stock del lote (${fmtKg(disp)} kg). Avisa a jefatura.`); return false; }
+    const uCaja=Number(prod.u_por_caja)||24;
+    const vmeses= mercado.value==='export'?(Number(prod.vida_util_export_m)||18):(Number(prod.vida_util_chile_m)||12);
+    const venc=addMonthsISO(batch.fecha,vmeses);
+    const nBolsas=Math.floor(sc*1000/gramaje), cajas=uCaja?Math.floor(nBolsas/uCaja):0;
+    const up=await dbUpdate('batches',batch.id,{peso_total:total,merma:m,consumo_mp:consumo,peso_seco:sc,rendimiento:rend,humedad:hum,estado:'cuarentena'});
+    if(up.error){ toast('Error: '+up.error.message); return false; }
+    if(loteRow) await dbUpdate('batch_lotes_mp',loteRow.id,{kg:consumo});
+    if(loteMp) await dbUpdate('lotes_mp',loteMp.id,{cantidad_restante:Math.max(0,disp-consumo)});
+    await dbInsert('lotes_pt',{producto_id:batch.producto_id,batch_id:batch.id,codigo_lote:batch.codigo,
+      fecha_elab:batch.fecha,fecha_venc:venc,mercado:mercado.value,bolsas:nBolsas,cajas,kg:sc,estado:'cuarentena'});
+    await bitacora('cerrar_batch_op','batches',batch.codigo,{total,consumo,seco:sc,bolsas:nBolsas});
+    toast('Registrado: '+nBolsas+' bolsas. Queda en cuarentena para que Calidad verifique.');
+    viewProduccionOperario();
+    return true;
+  });
 }
 async function cargarBandejaOperario(sel){
   const opt=sel.selectedOptions[0];
