@@ -683,6 +683,10 @@ async function viewProduccion(){
     if(b.estado==='cuarentena'){
       acc.appendChild(el('button',{class:'link',onclick:()=>formConfirmarCajas(b)},'Confirmar cajas'));
     }
+    if(USER.rol==='admin'){
+      acc.appendChild(el('button',{class:'link',onclick:()=>formEditarBatch(b)},'Editar'));
+      acc.appendChild(el('button',{class:'link',style:'color:#b00',onclick:()=>eliminarBatch(b)},'Eliminar'));
+    }
     tbody.appendChild(el('tr',{},
       td(el('b',{},b.codigo)), td(b.fecha||'—'),
       td(b.productos?b.productos.codigo:'—'), td(b.operario||'—'),
@@ -892,7 +896,7 @@ async function refrescarMisBandejas(prodId, box){
     box.appendChild(el('div',{class:'hint'},'Batch '+batch.codigo+' (en proceso) · '+todas.length+' bandejas en total · '+fmtKg(totalKg)+' kg'));
     box.appendChild(el('div',{class:'hint'},'Tus bandejas cargadas: '+mias.length));
     if(mias.length){ const ul=el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;margin-top:6px'});
-      mias.forEach(x=>ul.appendChild(el('span',{class:'pill on'},'#'+x.n_bandeja+' · '+fmtKg(x.kg)+' kg'))); box.appendChild(ul); }
+      mias.forEach(x=>ul.appendChild(el('span',{class:'pill on'},'#'+x.n_bandeja+' · '+fmtKg3(x.kg)+' kg'))); box.appendChild(ul); }
     box.appendChild(el('div',{class:'hint',style:'margin-top:14px'},'Cuando el batch salga del liofilizador, anota los kg que salieron:'));
     box.appendChild(el('button',{class:'btn sec',style:'margin-top:6px',onclick:()=>formCerrarBatchOperario(batch)},'Registrar kg que salieron (cierre del batch)'));
   } else {
@@ -1018,21 +1022,114 @@ async function cargarBandejaOperario(sel){
   }
   formAgregarBandeja(batch);
 }
-/* ---- Detalle de bandejas de un batch (jefatura ve todo) ---- */
+/* ---- Detalle de bandejas de un batch (jefatura ve y edita todo) ---- */
 async function verBatchBandejas(b){
-  const {data:bd}=await dbList('bandejas',{filtros:{batch_id:b.id},ordenCol:'n_bandeja'});
-  const total=(bd||[]).reduce((s,x)=>s+(Number(x.kg)||0),0);
-  const tdS='padding:6px;border:1px solid #ddd';
-  const rows=(bd||[]).map(x=>`<tr><td style="${tdS}">#${x.n_bandeja}</td><td style="${tdS}">${esc(x.usuario||'—')}</td><td style="${tdS};text-align:right">${fmtKg(x.kg)} kg</td></tr>`).join('')
-    || `<tr><td style="${tdS}" colspan="3">Sin bandejas cargadas aún.</td></tr>`;
-  const body=el('div',{});
-  body.innerHTML=`<p class="hint">Batch ${esc(b.codigo)} · ${(bd||[]).length} bandejas · total <b>${fmtKg(total)} kg</b></p>
-    <table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="background:#eef3ee">
-    <th style="${tdS};text-align:left">Bandeja</th><th style="${tdS};text-align:left">Operario</th><th style="${tdS};text-align:right">Peso</th></tr></thead>
-    <tbody>${rows}</tbody></table>`;
+  const admin = USER.rol==='admin';
+  const {data:bdRaw}=await dbList('bandejas',{filtros:{batch_id:b.id},ordenCol:'n_bandeja'});
+  const bd=(bdRaw||[]);
+  const orig={}; bd.forEach(x=>orig[x.id]={kg:x.kg,usuario:x.usuario});
   const root=$('#modalRoot');
-  const modal=el('div',{class:'modal',style:'max-width:540px'}, el('h3',{},'Bandejas del batch'), body,
-    el('div',{class:'actions'}, el('button',{class:'btn sec',onclick:()=>root.innerHTML=''},'Cerrar')));
+  const tdS='padding:5px;border:1px solid #ddd';
+  const totLine=el('p',{class:'hint'});
+  const table=el('table',{style:'width:100%;border-collapse:collapse;font-size:13px'});
+  table.innerHTML='<thead><tr style="background:#eef3ee"><th style="'+tdS+';text-align:left">#</th><th style="'+tdS+';text-align:left">Operario</th><th style="'+tdS+';text-align:right">Peso (kg)</th>'+(admin?('<th style="'+tdS+'"></th>'):'')+'</tr></thead>';
+  const tbody=el('tbody',{}); table.appendChild(tbody);
+  function recalcTot(){ let t=0,n=0; tbody.querySelectorAll('tr[data-id]').forEach(tr=>{ if(tr.dataset.del) return; n++; t+=Number((admin?tr.querySelector('.bj-kg').value:tr.dataset.kg))||0; });
+    totLine.innerHTML='Batch '+esc(b.codigo)+' · '+n+' bandejas · total <b>'+fmtKg3(t)+' kg</b>'; }
+  bd.forEach(x=>{
+    const tr=el('tr',{}); tr.dataset.id=x.id; tr.dataset.kg=x.kg;
+    let usrNode,kgNode;
+    if(admin){
+      usrNode=el('input',{class:'bj-usr',style:'padding:4px;font-size:13px;width:100%;border:1px solid #cdd;border-radius:6px'}); usrNode.value=x.usuario||'';
+      kgNode=el('input',{class:'bj-kg',type:'number',step:'0.001',style:'padding:4px;font-size:13px;text-align:right;width:100px;border:1px solid #cdd;border-radius:6px'}); kgNode.value=x.kg;
+      kgNode.addEventListener('input',recalcTot);
+    }else{ usrNode=el('span',{},x.usuario||'—'); kgNode=el('span',{},fmtKg3(x.kg)+' kg'); }
+    tr.appendChild(el('td',{style:tdS},'#'+x.n_bandeja));
+    tr.appendChild(el('td',{style:tdS},usrNode));
+    tr.appendChild(el('td',{style:tdS+';text-align:right'},kgNode));
+    if(admin){ tr.appendChild(el('td',{style:tdS}, el('button',{class:'link',style:'color:#b00',onclick:()=>{ tr.dataset.del= tr.dataset.del?'':'1'; tr.style.opacity=tr.dataset.del?.4:1; tr.style.textDecoration=tr.dataset.del?'line-through':'none'; recalcTot(); }},'borrar'))); }
+    tbody.appendChild(tr);
+  });
+  if(!bd.length) tbody.appendChild(el('tr',{},el('td',{style:tdS,colspan:String(admin?4:3)},'Sin bandejas cargadas aún.')));
+  recalcTot();
+  const body=el('div',{}); body.appendChild(totLine); body.appendChild(table);
+  let obsNode=null;
+  if(admin){ obsNode=el('textarea',{class:'field',rows:'2'}); obsNode.value=b.observaciones||'';
+    body.appendChild(el('div',{style:'margin-top:10px'}, lab('Observaciones del batch',obsNode))); }
+  const acc=el('div',{class:'actions'});
+  if(admin){
+    const save=el('button',{class:'btn'},'Guardar cambios');
+    save.addEventListener('click',async()=>{
+      save.disabled=true; save.textContent='Guardando…';
+      try{
+        for(const tr of tbody.querySelectorAll('tr[data-id]')){
+          const id=tr.dataset.id;
+          if(tr.dataset.del){ await dbDeleteEq('bandejas','id',id); continue; }
+          const kg=Number(tr.querySelector('.bj-kg').value)||0;
+          const usuario=tr.querySelector('.bj-usr').value.trim()||null;
+          if(orig[id] && (Number(orig[id].kg)!==kg || (orig[id].usuario||'')!==(usuario||''))) await dbUpdate('bandejas',id,{kg,usuario});
+        }
+        // recomputar peso_total del batch (para en_proceso informativo y cuarentena)
+        const {data:bd2}=await dbList('bandejas',{filtros:{batch_id:b.id}});
+        const nt=(bd2||[]).reduce((s,x)=>s+(Number(x.kg)||0),0);
+        const upd={observaciones:(obsNode.value.trim()||null)};
+        if(b.estado==='en_proceso') upd.peso_total=0; else upd.peso_total=nt;
+        await dbUpdate('batches',b.id,upd);
+        await bitacora('editar_bandejas','batches',b.codigo,{bandejas:(bd2||[]).length,total:Number(nt.toFixed(3))});
+        toast('Cambios guardados ('+fmtKg3(nt)+' kg en '+(bd2||[]).length+' bandejas).');
+        root.innerHTML=''; viewProduccion();
+      }catch(err){ toast('Error: '+err.message); save.disabled=false; save.textContent='Guardar cambios'; }
+    });
+    acc.appendChild(save);
+  }
+  acc.appendChild(el('button',{class:'btn sec',onclick:()=>root.innerHTML=''},'Cerrar'));
+  const modal=el('div',{class:'modal',style:'max-width:560px'}, el('h3',{}, admin?'Bandejas del batch (editable)':'Bandejas del batch'), body, acc);
+  const ov=el('div',{class:'ov',onclick:e=>{if(e.target===ov)root.innerHTML='';}}, modal);
+  root.innerHTML=''; root.appendChild(ov);
+}
+async function formEditarBatch(b){
+  const prod=(await dbList('productos',{filtros:{id:b.producto_id}})).data[0]||{};
+  const fecha=el('input',{class:'field',type:'date'}); fecha.value=b.fecha||hoyISO();
+  const operario=el('input',{class:'field'}); operario.value=b.operario||'';
+  const obs=el('textarea',{class:'field',rows:'3'}); obs.value=b.observaciones||'';
+  const estado=el('select',{class:'field'});
+  ['en_proceso','cuarentena','liberado','retenido','rechazado'].forEach(s=>{const o=el('option',{value:s},s); if(b.estado===s)o.selected=true; estado.appendChild(o);});
+  const body=el('div',{},
+    el('div',{class:'hint'},'Batch '+esc(b.codigo)+' · '+(prod.nombre||'')),
+    row2(lab('Fecha',fecha), lab('Operario',operario)),
+    lab('Estado',estado),
+    lab('Observaciones',obs),
+    el('p',{class:'hint'},'Para editar los pesos de las bandejas usa "Ver bandejas".'));
+  openCustomModal('Editar batch', body, async ()=>{
+    const up=await dbUpdate('batches',b.id,{fecha:fecha.value,operario:operario.value.trim()||null,estado:estado.value,observaciones:obs.value.trim()||null});
+    if(up.error){ toast('Error: '+up.error.message); return false; }
+    await bitacora('editar_batch','batches',b.codigo,{estado:estado.value});
+    toast('Batch '+b.codigo+' actualizado.'); viewProduccion(); return true;
+  });
+}
+async function eliminarBatch(b){
+  const {data:bl}=await dbList('batch_lotes_mp',{filtros:{batch_id:b.id}});
+  const devuelve=(bl||[]).reduce((s,r)=>s+(Number(r.kg)||0),0);
+  const body=el('div',{},
+    el('p',{},'¿Eliminar el batch '+esc(b.codigo)+'?'),
+    el('p',{class:'hint'},'Se borrarán sus bandejas, el vínculo de lote y el producto terminado asociado.'+(devuelve>0?(' Se devolverán '+fmtKg3(devuelve)+' kg al lote de materia prima.'):'')+' Esta acción no se puede deshacer.'));
+  const root=$('#modalRoot');
+  const del=el('button',{class:'btn',style:'background:#b00'},'Eliminar definitivamente');
+  del.addEventListener('click',async()=>{
+    del.disabled=true; del.textContent='Eliminando…';
+    try{
+      for(const r of (bl||[])){ if(Number(r.kg)>0){ const lm=(await dbList('lotes_mp',{filtros:{id:r.lote_mp_id}})).data[0];
+        if(lm) await dbUpdate('lotes_mp',lm.id,{cantidad_restante:Number(lm.cantidad_restante)+Number(r.kg)}); } }
+      await dbDeleteEq('lotes_pt','batch_id',b.id);
+      await dbDeleteEq('bandejas','batch_id',b.id);
+      await dbDeleteEq('batch_lotes_mp','batch_id',b.id);
+      await dbDeleteEq('batches','id',b.id);
+      await bitacora('eliminar_batch','batches',b.codigo,{devuelto:devuelve});
+      toast('Batch '+b.codigo+' eliminado.'); root.innerHTML=''; viewProduccion();
+    }catch(err){ toast('Error: '+err.message); del.disabled=false; del.textContent='Eliminar definitivamente'; }
+  });
+  const modal=el('div',{class:'modal',style:'max-width:460px'}, el('h3',{},'Eliminar batch'), body,
+    el('div',{class:'actions'}, el('button',{class:'btn sec',onclick:()=>root.innerHTML=''},'Cancelar'), del));
   const ov=el('div',{class:'ov',onclick:e=>{if(e.target===ov)root.innerHTML='';}}, modal);
   root.innerHTML=''; root.appendChild(ov);
 }
@@ -1905,6 +2002,7 @@ async function loadProv(){ const {data}=await dbList('proveedores',{ordenCol:'no
 async function loadProductos(){ const {data}=await dbList('productos',{filtros:{activo:true},ordenCol:'codigo'}); return data||[]; }
 /* --- formato y fechas --- */
 function fmtKg(n){ n=Number(n)||0; return (Math.round(n*100)/100).toLocaleString('es-CL'); }
+function fmtKg3(n){ n=Number(n)||0; return (Math.round(n*1000)/1000).toLocaleString('es-CL',{maximumFractionDigits:3}); }
 function hoyISO(){ const d=new Date(); return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10); }
 function ddmmaaFrom(iso){ if(!iso)return''; const [a,m,d]=iso.split('-'); return d+m+a.slice(2); }
 function addMonthsISO(iso,m){ const d=new Date(iso+'T00:00:00'); d.setMonth(d.getMonth()+Number(m||0)); return d.toISOString().slice(0,10); }
