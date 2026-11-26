@@ -1118,12 +1118,8 @@ async function eliminarBatch(b){
   del.addEventListener('click',async()=>{
     del.disabled=true; del.textContent='Eliminando…';
     try{
-      for(const r of (bl||[])){ if(Number(r.kg)>0){ const lm=(await dbList('lotes_mp',{filtros:{id:r.lote_mp_id}})).data[0];
-        if(lm) await dbUpdate('lotes_mp',lm.id,{cantidad_restante:Number(lm.cantidad_restante)+Number(r.kg)}); } }
-      await dbDeleteEq('lotes_pt','batch_id',b.id);
-      await dbDeleteEq('bandejas','batch_id',b.id);
-      await dbDeleteEq('batch_lotes_mp','batch_id',b.id);
-      await dbDeleteEq('batches','id',b.id);
+      const {error}=await sb.rpc('fn_eliminar_batch',{p_token:USER.token,p_batch_id:b.id});
+      if(error){ toast(error.message==='NO_AUTORIZADO'?'Solo un administrador puede eliminar batches.':('Error: '+error.message)); del.disabled=false; del.textContent='Eliminar definitivamente'; return; }
       await bitacora('eliminar_batch','batches',b.codigo,{devuelto:devuelve});
       toast('Batch '+b.codigo+' eliminado.'); root.innerHTML=''; viewProduccion();
     }catch(err){ toast('Error: '+err.message); del.disabled=false; del.textContent='Eliminar definitivamente'; }
