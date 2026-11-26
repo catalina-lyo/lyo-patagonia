@@ -277,6 +277,7 @@ const TABS = [
   {id:'recepcion',  label:'Recepción'},
   {id:'stock',      label:'Stock MP'},
   {id:'produccion', label:'Producción'},
+  {id:'temperaturas',label:'Temperaturas'},
   {id:'liberacion', label:'Liberación'},
   {id:'despachos',  label:'Despachos'},
   {id:'trazabilidad',label:'Trazabilidad'},
@@ -288,7 +289,7 @@ const TABS = [
   {id:'cuenta',     label:'Mi cuenta'},
 ];
 // Operarios solo ven lo de producción (ingreso de MP, bandejas y producto terminado)
-const OPERARIO_TABS=['inicio','recepcion','produccion','cuenta'];
+const OPERARIO_TABS=['inicio','recepcion','produccion','temperaturas','cuenta'];
 function tabVisible(t){
   if(t.admin && USER.rol!=='admin') return false;
   if(USER.rol==='operario') return OPERARIO_TABS.includes(t.id);
@@ -304,6 +305,7 @@ function setActive(id){ document.querySelectorAll('.tab').forEach(b=>
   b.classList.toggle('active', b.getAttribute('data-id')===id)); }
 function go(id){ setActive(id);
   ({inicio:viewInicio, recepcion:viewRecepcion, stock:viewStock, produccion:viewProduccion,
+    temperaturas:viewTemperaturas,
     liberacion:viewLiberacion, despachos:viewDespachos, trazabilidad:viewTrazabilidad,
     calidad:viewCalidad,
     mp:viewMP, prod:viewProd, prov:viewProv,
@@ -1128,6 +1130,71 @@ async function eliminarBatch(b){
     el('div',{class:'actions'}, el('button',{class:'btn sec',onclick:()=>root.innerHTML=''},'Cancelar'), del));
   const ov=el('div',{class:'ov',onclick:e=>{if(e.target===ov)root.innerHTML='';}}, modal);
   root.innerHTML=''; root.appendChild(ov);
+}
+
+/* ========================= TEMPERATURAS ========================= */
+async function viewTemperaturas(){
+  const v=$('#view'); v.innerHTML='';
+  const p=el('div',{class:'panel'});
+  p.appendChild(el('h2',{},'Temperaturas de proceso'));
+  p.appendChild(el('p',{class:'hint'},'Anota las temperaturas que tomas durante el corte y el congelado, para dejar trazabilidad. Toma varias mediciones (idealmente ~6) durante el corte.'));
+  const bar=el('div',{class:'rowbtns'});
+  bar.appendChild(el('button',{class:'btn accent',onclick:()=>formTemperatura()},'+ Registrar temperatura'));
+  p.appendChild(bar);
+  const box=el('div',{style:'margin-top:14px'});
+  p.appendChild(box);
+  v.appendChild(p);
+  await refrescarTemperaturas(box);
+}
+async function refrescarTemperaturas(box){
+  box.innerHTML='';
+  const esOp=USER.rol==='operario';
+  const {data}=await dbList('temperaturas',{filtros: esOp?{fecha:hoyISO()}:{}, ordenCol:'creado', ordenDir:'desc', limite:200});
+  const rows=data||[];
+  box.appendChild(el('div',{class:'hint',style:'margin-bottom:8px'}, esOp?('Mediciones de hoy: '+rows.length):('Últimas mediciones: '+rows.length)));
+  if(!rows.length){ box.appendChild(el('p',{class:'hint'},'Aún no hay temperaturas registradas'+(esOp?' hoy.':'.'))); return; }
+  const pm=await mapById('productos');
+  const tdS='padding:6px;border:1px solid #ddd;font-size:13px';
+  const table=el('table',{style:'width:100%;border-collapse:collapse'});
+  table.innerHTML='<thead><tr style="background:#eef3ee">'+
+    ['Fecha','Hora','Producto','Etapa','N°','°C','Operario','Obs.'].map(h=>'<th style="'+tdS+';text-align:left">'+h+'</th>').join('')+'</tr></thead>';
+  const tb=el('tbody',{});
+  rows.forEach(r=>{ const prod=pm[r.producto_id];
+    const tr=el('tr',{});
+    [r.fecha||'—', r.hora||'—', prod?prod.codigo:'—', r.etapa||'—', (r.n_medicion!=null?('#'+r.n_medicion):'—'),
+     (r.temperatura!=null?(r.temperatura+' °C'):'—'), r.operario||'—', r.observacion||'']
+      .forEach(c=>tr.appendChild(el('td',{style:tdS},String(c))));
+    if(USER.rol==='admin'){ const td=el('td',{style:tdS}, el('button',{class:'link',style:'color:#b00',onclick:async()=>{ await dbDeleteEq('temperaturas','id',r.id); refrescarTemperaturas(box); }},'borrar')); tr.appendChild(td); }
+    tb.appendChild(tr);
+  });
+  table.appendChild(tb); box.appendChild(table);
+}
+async function formTemperatura(){
+  const prods=await loadProductos();
+  const prodSel=el('select',{class:'field'});
+  prodSel.innerHTML='<option value="">(sin producto)</option>'+prods.map(p=>`<option value="${p.id}">${esc(p.codigo)} · ${esc(p.nombre)} (${p.especie})</option>`).join('');
+  const etapa=el('select',{class:'field'});
+  etapa.innerHTML=['corte','descongelado','congelado','liofilizado','otro'].map(e=>`<option value="${e}">${e}</option>`).join('');
+  const now=new Date(); const hhmm=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
+  const hora=el('input',{class:'field',value:hhmm});
+  const temp=el('input',{class:'field',type:'number',step:'0.1',placeholder:'°C (ej. -18)'});
+  const obs=el('input',{class:'field',placeholder:'opcional'});
+  const body=el('div',{},
+    lab('Producto (opcional)',prodSel),
+    row2(lab('Etapa',etapa), lab('Hora',hora)),
+    row2(lab('Temperatura (°C)',temp), lab('Observación',obs)));
+  openCustomModal('Registrar temperatura', body, async ()=>{
+    if(temp.value===''){ toast('Ingresa la temperatura'); return false; }
+    const hoy=hoyISO();
+    const f={fecha:hoy}; if(prodSel.value) f.producto_id=prodSel.value;
+    const prev=(await dbList('temperaturas',{filtros:f})).data||[];
+    const n=prev.length+1;
+    const r=await dbInsert('temperaturas',{fecha:hoy,producto_id:prodSel.value||null,etapa:etapa.value,
+      n_medicion:n,hora:hora.value||hhmm,temperatura:Number(temp.value),operario:USER.nombre,observacion:obs.value.trim()||null});
+    if(r.error){ toast('Error: '+r.error.message); return false; }
+    await bitacora('temperatura','temperaturas',etapa.value,{t:Number(temp.value),n});
+    toast('Temperatura #'+n+' registrada: '+temp.value+' °C'); viewTemperaturas(); return true;
+  });
 }
 
 /* ========================= LIBERACIÓN ========================= */
